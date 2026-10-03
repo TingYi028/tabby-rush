@@ -191,6 +191,11 @@ export function blinkLights(t) {
   blinkAmber.color.setRGB(on ? 3.2 : 0.8, on ? 1.7 : 0.45, on ? 0.3 : 0.1);
   blinkRed.color.setRGB(on ? 0.9 : 4, on ? 0.15 : 0.5, on ? 0.12 : 0.35);
   if (boostTex) boostTex.offset.y = -((t * 1.4) % 1); // boost-strip chevrons stream forward
+  if (arrowMat) { // lane-switch arrows: ~2.5 Hz, under the 3-flashes/s line
+    const on = Math.sin(t * 15.7) > -0.2;
+    arrowMat.opacity = on ? 1 : 0.25;
+    arrowGlow.opacity = on ? 0.9 : 0.15;
+  }
 }
 
 let hurdleGeo, hurdleHull, hurdleLights;
@@ -341,6 +346,58 @@ export class BoostStrip {
     this.glow.renderOrder = 3;
     this.group.add(m, this.glow);
   }
+}
+
+/* ---------- lane-switch telegraph: blinking amber arrows on the sleepers of the lane a train is about to swerve into ---------- */
+
+let arrowGeo, arrowMat, arrowGlow;
+/** Double chevron pointing +x (sideways across the track), tall so it survives the grazing view; dark rim. */
+function laneArrowCanvas() {
+  const W = 128, H = 160, c = makeCanvas(W, H), g = c.getContext('2d');
+  g.lineJoin = 'round';
+  for (const x0 of [10, 62]) {
+    g.beginPath();
+    g.moveTo(x0, 8);
+    g.lineTo(x0 + 54, H / 2);
+    g.lineTo(x0, H - 8);
+    g.lineTo(x0 + 22, H / 2);
+    g.closePath();
+    g.lineWidth = 10;
+    g.strokeStyle = 'rgba(40, 18, 0, 0.9)';
+    g.stroke();
+    g.fillStyle = '#ffc23a';
+    g.fill();
+  }
+  return c;
+}
+export const ARROW_SPACING = 6;
+export class LaneArrows {
+  constructor(mats) {
+    if (!arrowGeo) {
+      arrowGeo = new THREE.PlaneGeometry(2.1, 2.8);
+      arrowGeo.rotateX(-Math.PI / 2);
+      arrowMat = new THREE.MeshBasicMaterial({
+        map: makeTexture(laneArrowCanvas()), color: new THREE.Color(2.6, 1.5, 0.35), transparent: true, depthWrite: false,
+        side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
+      arrowGlow = new THREE.SpriteMaterial({
+        map: mats && mats.glowTex, color: 0xffa62b, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+      });
+    }
+    this.group = new THREE.Group();
+    for (let i = 0; i < 4; i++) {
+      const m = new THREE.Mesh(arrowGeo, arrowMat);
+      m.position.set(0, 0.2, -i * ARROW_SPACING);
+      m.renderOrder = 2;
+      const glow = new THREE.Sprite(arrowGlow);
+      glow.position.set(0, 0.55, -i * ARROW_SPACING);
+      glow.scale.set(3.2, 1.3, 1);
+      glow.renderOrder = 3;
+      this.group.add(m, glow);
+    }
+  }
+  /** dir +1: the train moves toward +x (arrows point right), -1: toward -x. */
+  setDir(dir) { this.group.scale.x = dir < 0 ? -1 : 1; }
 }
 
 /* ---------- security drone (chases the hero after a stumble) ---------- */

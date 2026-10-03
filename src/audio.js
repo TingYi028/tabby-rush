@@ -140,8 +140,10 @@ export class AudioFX {
   /** Call from a user gesture: resumes the context so sound can play. */
   unlock() {
     this.preload();
-    if (this.ctx && this.ctx.state !== 'running') this.ctx.resume().catch(() => {});
-    this.unlocked = true;
+    if (!this.ctx) return Promise.resolve(false);
+    const done = () => { this.unlocked = this.ctx.state === 'running'; return this.unlocked; };
+    if (this.ctx.state === 'running') return Promise.resolve(done());
+    return this.ctx.resume().then(done, () => false);
   }
 
   /** Fetch and decode; `onProgress(0..1)` reports download progress when the size is known. */

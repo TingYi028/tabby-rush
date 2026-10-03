@@ -5,8 +5,56 @@ import { images, makeTexture } from './assets.js';
 import {
   gravelCanvas, concreteCanvas, sidewalkCanvas, cloudCanvas, fallbackFacadeCanvas, makeCanvas,
 } from './textures.js';
+import { rng } from './textures.js';
+import { makeLook, blendLook } from './themes.js';
+import { TunnelShell } from './tunnel.js';
+import { Rain } from './weather.js';
 
 export const FOG_COLOR = 0xf3d9b1;
+const BULB = new THREE.Color(1.7, 1.5, 1.1);
+const HEADLAMP = 26;   // candela at full tunnel darkness (decay 1)
+const smooth = THREE.MathUtils.smoothstep;
+
+/**
+ * Lit-window emissive map for a facade: its grey glass panes, flood-filled per window so each window is
+ * either lit (mostly warm, a few TV-blue) or dark. Black elsewhere, so a zero intensity keeps the day look.
+ */
+function windowGlowCanvas(src, seed) {
+  const W = 160, H = 384, c = makeCanvas(W, H), g = c.getContext('2d');
+  g.drawImage(src, 0, 0, W, H);
+  let d;
+  try { d = g.getImageData(0, 0, W, H).data; } catch (e) { g.fillStyle = '#000'; g.fillRect(0, 0, W, H); return c; } // tainted canvas: no glow
+  const n = W * H;
+  const mask = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = d[i * 4] / 255, gr = d[i * 4 + 1] / 255, b = d[i * 4 + 2] / 255;
+    const mx = Math.max(r, gr, b), mn = Math.min(r, gr, b);
+    if (mx > 0.2 && mx < 0.75 && (mx - mn) / mx < 0.15 && b >= r - 0.03) mask[i] = 1;
+  }
+  const out = g.createImageData(W, H), o = out.data, rnd = rng(seed), stack = [], comp = [];
+  for (let i = 0; i < n; i++) {
+    o[i * 4 + 3] = 255;
+    if (mask[i] !== 1) continue;
+    comp.length = 0;
+    stack.push(i);
+    mask[i] = 2;
+    while (stack.length) {
+      const p = stack.pop(), x = p % W;
+      comp.push(p);
+      if (x > 0 && mask[p - 1] === 1) { mask[p - 1] = 2; stack.push(p - 1); }
+      if (x < W - 1 && mask[p + 1] === 1) { mask[p + 1] = 2; stack.push(p + 1); }
+      if (p >= W && mask[p - W] === 1) { mask[p - W] = 2; stack.push(p - W); }
+      if (p + W < n && mask[p + W] === 1) { mask[p + W] = 2; stack.push(p + W); }
+    }
+    if (comp.length < 14 || rnd() > 0.72) continue;   // specks and dark windows stay black
+    const k = 0.6 + 0.4 * rnd(), warm = rnd() < 0.85;
+    const cr = (warm ? 255 : 150) * k, cg = (warm ? 190 : 200) * k, cb = (warm ? 105 : 255) * k;
+    for (const p of comp) { o[p * 4] = cr; o[p * 4 + 1] = cg; o[p * 4 + 2] = cb; }
+  }
+  g.putImageData(out, 0, 0);
+  return c;
+}
+
 const FACADE_TINT = ['#b4523d', '#e6d2a6', '#3f8e8a', '#c2643b'];
 const BX = C.WALL_X + 3.4; // inner face of the first row of buildings
 
@@ -74,9 +122,93 @@ export class World {
     this.buildSky();
     this.buildTrack();
     this.buildCity();
+    this.buildAmbience();
     this.segments = [];
     for (let i = 0; i < C.SEG_COUNT; i++) this.segments.push({ s: 0, buildings: [], decals: [] });
     this.reset(0);
+  }
+
+  /* ---------- zone themes & tunnel look (uniform / colour / intensity changes only, no recompiles) ---------- */
+
+  buildAmbience() {
+    // camera-mounted "headlamp" for tunnels / night; created at boot (intensity 0) so the light count never changes
+    this.headlamp = new THREE.SpotLight(0xffe2b4, 0, 140, 0.6, 0.6, 1);
+    this.scene.add(this.headlamp, this.headlamp.target);
+    this.rain = new Rain();
+    this.scene.add(this.rain.mesh);
+    this.tunnel = new TunnelShell(this.root);
+    this.look = makeLook();
+    this.zone = { from: 0, to: 0, t: 1 };
+    this.dark = 0;      // tunnel darkness 0..1
+    this.shelter = 0;   // under the tunnel roof (no rain) 0..1
+    this.applyLook();
+  }
+
+  /** Tunnel darkness / rain shelter from the camera's track position, headlamp, rain; re-applies the look when it moved. */
+  updateAmbience(dt, dist, camera, speed) {
+    let dark = 0, shelter = 0;
+    const s0 = this.tunnel.s0;
+    if (s0 >= 0) {
+      const camS = dist - camera.position.z, s1 = s0 + this.tunnel.len;   // the camera trails the hero (z = 0) by its z
+      dark = smooth(camS, s0 - 14, s0 + 14) * (1 - smooth(camS, s1 - 6, s1 + 12));
+      shelter = smooth(camS, s0 - 30, s0 + 2) * (1 - smooth(camS, s1 - 26, s1 - 2));
+      this.tunnel.update(camS);
+    }
+    if (dark !== this.dark || shelter !== this.shelter) { this.dark = dark; this.shelter = shelter; this.dirty = true; }
+    if (this.dirty) { this.dirty = false; this.applyLook(); }
+    const p = camera.position;
+    this.headlamp.position.set(p.x, p.y - 0.7, p.z - 0.5);
+    this.headlamp.target.position.set(p.x * 0.4, 0.6, p.z - 46);
+    this.rain.update(dt, dist, speed, camera);
+  }
+
+  /** Cross-fade between zone themes (indices into THEMES), t 0..1 (eased here). */
+  setTheme(from, to, t) {
+    const z = this.zone, e = t * t * (3 - 2 * t);
+    if (z.from === from && z.to === to && z.t === e) return;
+    z.from = from; z.to = to; z.t = e;
+    this.dirty = true;
+  }
+
+  /** Track position of the tunnel entrance to show (the one being approached or driven through), -1 for none. */
+  setTunnel(s0) { this.tunnel.place(s0); }
+
+  /**
+   * Boot warm-up: show the tunnel just ahead of track position `dist` and the rain so their shader programs
+   * compile in the warm-up render instead of hitching on first sight; prewarm(false) hides them again.
+   */
+  prewarm(on, dist = 0) {
+    const t = this.tunnel;
+    t.place(on ? dist + 30 : -1);
+    t.curtain.visible = t.glare.visible = on;
+    this.rain.mesh.visible = on;
+  }
+
+  applyLook() {
+    const L = blendLook(this.look, this.zone.from, this.zone.to, this.zone.t, this.dark);
+    const u = this.sky.material.uniforms;
+    u.top.value.copy(L.skyTop);
+    u.mid.value.copy(L.skyMid);
+    u.hor.value.copy(L.skyHor);
+    const f = this.scene.fog;
+    f.color.copy(L.fog);
+    f.near = L.fogNear;
+    f.far = L.fogFar;
+    this.scene.background.copy(L.fog);
+    this.hemi.color.copy(L.hemiSky);
+    this.hemi.groundColor.copy(L.hemiGround);
+    this.hemi.intensity = L.hemi;
+    this.sun.color.copy(L.sunColor);
+    this.sun.intensity = L.sun;
+    this.scene.environmentIntensity = L.env;
+    for (const t of this.tinted) t.mat.color.copy(t.base).multiply(L.building);
+    for (const t of this.types) t.im.material[0].emissiveIntensity = L.windows;
+    for (const b of this.boards) b.material.emissiveIntensity = L.boards;
+    this.bulbMat.color.copy(BULB).multiplyScalar(L.lamps);
+    if (this.skylineMat) this.skylineMat.color.copy(L.skyline);
+    for (const c of this.clouds) c.material.color.copy(L.clouds);
+    this.headlamp.intensity = HEADLAMP * L.headlamp;
+    this.rain.setAmount(L.rain * (1 - this.shelter));
   }
 
   buildLights() {
@@ -85,7 +217,7 @@ export class World {
     this.sun.castShadow = true;
     const sc = this.sun.shadow.camera;
     sc.left = -34; sc.right = 34; sc.top = 52; sc.bottom = -34; sc.near = 1; sc.far = 160;
-    this.sun.shadow.mapSize.set(2048, 2048);
+    this.sun.shadow.mapSize.set(1024, 1024);
     this.sun.shadow.bias = -0.0004;
     this.sun.shadow.normalBias = 0.05;
     this.scene.add(this.hemi, this.sun, this.sun.target);
@@ -119,6 +251,7 @@ export class World {
         map: tex, transparent: true, side: THREE.BackSide, depthWrite: false, fog: false,
       }));
       sky.material.color.setRGB(0.96, 0.95, 0.98);
+      this.skylineMat = sky.material;
       sky.position.y = H / 2 - 24;
       sky.renderOrder = -9;
       this.far.add(sky);
@@ -265,6 +398,7 @@ export class World {
     };
     const wireMesh = new THREE.Mesh(mergeGeometries(wires, false), wmat);
     const bulbMesh = new THREE.Mesh(mergeGeometries(bulbs, false), new THREE.MeshBasicMaterial({ color: new THREE.Color(1.7, 1.5, 1.1) }));
+    this.bulbMat = bulbMesh.material;
     T.add(steelMesh, lampMesh, wireMesh, bulbMesh);
     for (const o of [steelMesh, lampMesh, wireMesh, bulbMesh, railMesh]) o.frustumCulled = false;
   }
@@ -278,7 +412,8 @@ export class World {
     for (let i = 1; i <= 4; i++) {
       const src = images[`facade_0${i}`] || fallbackFacadeCanvas(i - 1);
       const mats = [
-        new THREE.MeshStandardMaterial({ map: makeTexture(src), roughness: 0.92 }),
+        new THREE.MeshStandardMaterial({ map: makeTexture(src), roughness: 0.92,
+          emissive: 0xffffff, emissiveMap: makeTexture(windowGlowCanvas(src, 71 * i)), emissiveIntensity: 0 }),
         new THREE.MeshStandardMaterial({ color: FACADE_TINT[i - 1], roughness: 0.95 }),
       ];
       const im = new THREE.InstancedMesh(box, mats, 160);
@@ -324,6 +459,9 @@ export class World {
       im.count = 0;
       this.root.add(im);
     }
+    // materials darkened / tinted by the zone theme (base colour kept for the multiply)
+    this.tinted = [...this.types.flatMap((t) => t.im.material), this.parapets.material, this.towers.material, this.frames.material]
+      .map((mat) => ({ mat, base: mat.color.clone() }));
 
     this.decalMats = [];
     for (let i = 1; i <= 6; i++) {
@@ -438,7 +576,7 @@ export class World {
     this.layoutBuildings();
   }
 
-  update(dt, dist, camera) {
+  update(dt, dist, camera, speed = 0) {
     this.track.position.z = dist % C.PERIOD;
     this.sky.position.copy(camera.position);
     this.far.position.set(camera.position.x, 0, camera.position.z);
@@ -447,7 +585,8 @@ export class World {
       if (c.position.x > 700) c.position.x = -700;
     }
     this.sun.target.position.set(camera.position.x, 0, -22);
-    this.sun.position.set(camera.position.x - 18, 40, 16);
+    this.sun.position.copy(this.sun.target.position).add(this.look.sunDir);
+    this.updateAmbience(dt, dist, camera, speed);
     let dirty = false;
     for (const seg of this.segments) {
       if (dist - (seg.s + C.SEG_LEN) > 45) {

@@ -19,7 +19,7 @@ export class UI {
     $('btn-pause').addEventListener('click', h.pause);
     $('btn-resume').addEventListener('click', h.resume);
     $('btn-quit').addEventListener('click', h.menu);
-    $('btn-retry').addEventListener('click', h.play);
+    $('btn-retry').addEventListener('click', h.retry || h.play);
     $('btn-home').addEventListener('click', h.menu);
     for (const id of ['btn-sound', 'btn-sound-hud']) $(id).addEventListener('click', h.toggleSound);
     const touch = matchMedia('(pointer: coarse)').matches;
@@ -70,9 +70,14 @@ export class UI {
   /** Frenzy meter: fill 0..1; `active` while TABBY RUSH is running; `ready` when full and waiting for the player. */
   rush(fill, active, ready = false) {
     const el = $('rush');
-    $('rush-fill').style.transform = `scaleX(${Math.max(0, Math.min(1, fill))})`;
-    el.classList.toggle('full', fill >= 0.999 || active);
-    el.classList.toggle('active', active);
+    const f = Math.round(Math.max(0, Math.min(1, fill)) * 400) / 400;
+    const key = `${f}|${active}`;
+    if (key !== this.rushKey) {   // only touch the DOM when something changed
+      this.rushKey = key;
+      $('rush-fill').style.transform = `scaleX(${f})`;
+      el.classList.toggle('full', fill >= 0.999 || active);
+      el.classList.toggle('active', active);
+    }
     const on = ready && !active;
     if (on !== this.rushOn) {
       this.rushOn = on;
@@ -107,13 +112,16 @@ export class UI {
     const btn = $('btn-rush');
     btn.querySelector('kbd').hidden = touch;
     this.rushOn = false;
+    // Fires on click (pointer up) so a swipe that starts on the button still steers the hero;
+    // main.js sets suppressRush when that swipe was recognised.
+    this.suppressRush = false;
     const fire = (e) => {
       e.preventDefault();
       e.stopPropagation();
-      if (h.rush) h.rush();
       btn.blur();
+      if (this.suppressRush) { this.suppressRush = false; return; }
+      if (h.rush) h.rush();
     };
-    btn.addEventListener('pointerdown', fire);
     btn.addEventListener('click', fire);
     // pooled coins that fly from the pickup to the HUD counter
     const wrap = $('coin-fly');
@@ -189,12 +197,13 @@ export class UI {
   }
 
   powers(power, max) {
-    for (const [k, b] of Object.entries(this.bars)) {
-      const t = power[k];
-      b.row.hidden = !(t > 0);
-      if (t > 0) b.fill.style.transform = `scaleX(${Math.max(0, t / max[k])})`;
+    for (const k in this.bars) {
+      const b = this.bars[k], t = power[k];
+      const on = t > 0, f = on ? Math.round(Math.max(0, t / max[k]) * 300) / 300 : 0;
+      if (b.on !== on) { b.on = on; b.row.hidden = !on; }
+      if (on && b.f !== f) { b.f = f; b.fill.style.transform = `scaleX(${f})`; }
     }
-    $('shield-chip').hidden = !power.shield;
+    if (this.shieldOn !== !!power.shield) { this.shieldOn = !!power.shield; $('shield-chip').hidden = !power.shield; }
   }
 
   toast(text, icon, tone = 'sun') {

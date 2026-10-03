@@ -1,5 +1,7 @@
 import * as C from './config.js';
 import { Train, Ramp, Hurdle, Overhead, PowerUp, JumpPad, BoostStrip } from './objects.js';
+import { setPieces } from './setpieces.js';
+import { tuneRow } from './director.js';
 
 const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad, boost: BoostStrip };
 const POWER_WEIGHTS = [['magnet', 0.24], ['sneakers', 0.18], ['x2', 0.2], ['shield', 0.16], ['jetpack', 0.22]];
@@ -29,7 +31,40 @@ export class Spawner {
     this.pools = { train: [], ramp: [], hurdle: [], overhead: [], power: [], pad: [], boost: [] };
     this.obstacles = [];
     this.powerups = [];
+    this.rng = null;      // daily challenge: seeded () => [0, 1) that drives generation (see seeded())
+    this.rowHook = null;  // daily modifier: (content, k, spawner) => void, called per row in genSlot()
     this.reset(false);
+  }
+
+  /** Run `fn` with Math.random swapped for `this.rng` (when set), so the generated track is repeatable. */
+  seeded(fn) {
+    if (!this.rng) return fn();
+    const rnd = Math.random;
+    this.realRandom = rnd;
+    Math.random = this.rng;
+    try { return fn(); } finally { Math.random = rnd; }
+  }
+
+  /** Inside seeded(): run `fn` on the real Math.random instead. */
+  unseeded(fn) {
+    if (!this.rng || Math.random !== this.rng) return fn();
+    Math.random = this.realRandom;
+    try { return fn(); } finally { Math.random = this.rng; }
+  }
+
+  /**
+   * Pooled objects draw their own randomness (THREE uuids, train livery, lazily built cars and textures)
+   * from the real Math.random, so a seeded track never depends on what happens to be in the pools.
+   */
+  isolate(obj) {
+    for (let p = Object.getPrototypeOf(obj); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
+      for (const m of Object.getOwnPropertyNames(p)) {
+        const f = Object.getOwnPropertyDescriptor(p, m).value;
+        if (m === 'constructor' || typeof f !== 'function' || Object.hasOwn(obj, m)) continue;
+        obj[m] = (...a) => this.unseeded(() => f.apply(obj, a));
+      }
+    }
+    return obj;
   }
 
   reset(active = true) {
@@ -43,6 +78,7 @@ export class Spawner {
     this.busy = [0, 0, 0];
     this.blocked = [];
     this.reserve = null;
+    this.resetSetPieces();
     this.lastMoving = -99;
     this.nextPower = 5 + C.randi(0, 3);
     this.lastBoost = -99;
@@ -51,7 +87,7 @@ export class Spawner {
   }
 
   get(kind) {
-    const obj = this.pools[kind].pop() || new FACTORY[kind](this.mats);
+    const obj = this.pools[kind].pop() || this.unseeded(() => this.isolate(new FACTORY[kind](this.mats)));
     if (!obj.group.parent) this.root.add(obj.group);
     obj.group.visible = true;
     return obj;
@@ -63,35 +99,59 @@ export class Spawner {
   }
 
   addObstacle(kind, obj, lane, s0, len, extra = {}) {
-    const o = { kind, type: kind, obj, lane, x: C.laneX(lane), s0, len, moving: false, speed: 0, ...extra };
-    obj.group.position.set(o.x, 0, -s0);
+    const o = { kind, type: kind, obj, lane, x: C.laneX(lane), y0: 0, s0, len, moving: false, speed: 0, ...extra };
+    obj.group.position.set(o.x, o.y0, -s0);
     obj.group.rotation.set(0, 0, 0);
     this.obstacles.push(o);
     return o;
   }
 
-  /** Highest walkable surface under (x, s) that the hero can stand on from height y. */
-  groundAt(x, s, y) {
+  /**
+   * Highest walkable surface under (x, s) that the hero can stand on from height y.
+   * `prevS` (last frame's s) keeps a long frame from tunnelling under a ramp: slopes are judged by
+   * the height where the hero was, and a train is reachable when he was climbing its ramp.
+   */
+  groundAt(x, s, y, prevS = s) {
     let g = 0;
     for (const o of this.obstacles) {
       if (o.type !== 'train' && o.type !== 'ramp') continue;
       if (Math.abs(x - o.x) > 1.22 || s < o.s0 - 0.3 || s > o.s0 + o.len + 0.3) continue;
-      const top = o.type === 'train' ? C.TRAIN_TOP : C.clamp((s - o.s0) / C.RAMP_LEN, 0, 1) * C.TRAIN_TOP;
-      if (y >= top - C.STEP_UP && top > g) g = top;
+      let top, reach;
+      if (o.type === 'train') {
+        top = C.TRAIN_TOP;
+        reach = y >= top - C.STEP_UP || (prevS < o.s0 && this.climbingInto(o, prevS, y));
+      } else {
+        top = C.clamp((s - o.s0) / C.RAMP_LEN, 0, 1) * C.TRAIN_TOP;
+        reach = y >= C.clamp((Math.min(s, prevS) - o.s0) / C.RAMP_LEN, 0, 1) * C.TRAIN_TOP - C.STEP_UP;
+      }
+      if (reach && top > g) g = top;
     }
     return g;
   }
 
+  /** Was the hero (at prevS, height y) on the ramp that leads onto this train? */
+  climbingInto(train, prevS, y) {
+    for (const q of this.obstacles) {
+      if (q.type !== 'ramp' || Math.abs(q.x - train.x) > 0.1 || Math.abs(q.s0 + q.len - train.s0) > 0.25) continue;
+      if (prevS < q.s0 - 0.3) continue;
+      const h = C.clamp((prevS - q.s0) / C.RAMP_LEN, 0, 1) * C.TRAIN_TOP;
+      if (y >= h - C.STEP_UP) return true;
+    }
+    return false;
+  }
+
   update(dt, dist) {
     const events = [];
+    this.trackPace(dt, dist);
     if (this.active) {
-      while (C.START_GAP + this.k * C.SLOT < dist + C.VIEW_AHEAD) this.genSlot();
+      this.seeded(() => { while (C.START_GAP + this.k * C.SLOT < dist + C.VIEW_AHEAD) this.genSlot(); });
     }
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const o = this.obstacles[i];
       if (o.moving) {
         o.s0 -= o.speed * dt;
         o.obj.group.position.z = -o.s0;
+        if (o.swerve) this.swerveStep(o, dt, dist, events);
         if (!o.honked && o.s0 - dist < 95) { o.honked = true; events.push({ type: 'horn', lane: o.lane }); }
         if (!o.passed && o.s0 < dist) { o.passed = true; events.push({ type: 'pass', lane: o.lane }); }
       }
@@ -108,6 +168,7 @@ export class Spawner {
         this.powerups.splice(i, 1);
       }
     }
+    this.updateSigns(dt, dist, events);
     return events;
   }
 
@@ -128,6 +189,7 @@ export class Spawner {
 
   /** Remove an obstacle (shield smash) together with its attached ramp. */
   smash(o) {
+    this.roofSmash(o);
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const q = this.obstacles[i];
       if (q === o || (q.lane === o.lane && q.type === 'ramp' && Math.abs(q.s0 + q.len - o.s0) < 0.1)) {
@@ -144,6 +206,8 @@ export class Spawner {
     const gate = wave === GATE_ROW, breather = wave > GATE_ROW;
     const diff = C.clamp(C.clamp(s0 / 3400, 0, 1) + WAVE[wave], 0, 1);
     const prevBlocked = this.blocked[k - 1] || [false, false, false];
+    if (k > 3) this.blocked[k - 4] = undefined; // only the previous row is ever read
+    if (this.setPieceRow(k, s0)) return; // rooftop segment rows (setpieces.js)
 
     const prevSafe = this.safe;
     // An oncoming train needs a clear lane next to an unchanging safe lane for the rows it sweeps through.
@@ -151,6 +215,7 @@ export class Spawner {
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k);
       if (cand.length) this.reserve = { lane: C.pick(cand), until: k + 6 };
     }
+    this.planSwerve(k, s0, prevSafe);
     const R = this.reserve;
     let newSafe = prevSafe;
     if (!R && k > 1 && Math.random() < 0.32) {
@@ -167,6 +232,7 @@ export class Spawner {
     for (let L = 0; L < 3; L++) {
       if (this.busy[L] > k) { content[L] = 'body'; blocked[L] = true; continue; }
       if (k < 2) continue;
+      if (R && R.to === L && k < R.until) continue; // lane an oncoming train will swerve into stays clear
       if (R && R.lane === L) {
         if (k >= R.until) { content[L] = 'moving'; this.reserve = null; }
         continue;
@@ -205,17 +271,20 @@ export class Spawner {
 
     if (breather) this.breathe(content, blocked);
     else if (wave < 3 && k > 3) this.maybeBoost(content, R, k, s0);
+    if (this.rowHook) this.rowHook(content, k, this);
 
+    tuneRow(this, k, s0, content, blocked, prevBlocked, breather); // zone theme + tunnel rules (director.js)
     this.blocked[k] = blocked;
 
     const info = [null, null, null];
     for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff);
+    this.armSwerve(R, content, s0);
 
     if (breather) this.breatherCoins(content, R, newSafe, s0);
     else this.placeCoins(content, info, blocked, newSafe, s0, k);
 
     if (k >= this.nextPower - (breather ? 2 : 0)) {
-      const lanes = [0, 1, 2].filter((l) => content[l] === 'empty' && !(R && R.lane === l));
+      const lanes = [0, 1, 2].filter((l) => content[l] === 'empty' && !this.reserved(R, l));
       if (lanes.length) {
         const L = C.pick(lanes);
         const obj = this.get('power');
@@ -244,7 +313,7 @@ export class Spawner {
   maybeBoost(content, R, k, s0) {
     if (k - this.lastBoost < 6 || Math.random() > BOOST_CHANCE) return;
     const airborne = (l) => this.obstacles.some((o) => o.lane === l && (o.type === 'pad' || o.type === 'hurdle') && o.s0 > s0 - C.SLOT && o.s0 < s0);
-    const open = [0, 1, 2].filter((l) => content[l] === 'empty' && !(R && R.lane === l) && !airborne(l));
+    const open = [0, 1, 2].filter((l) => content[l] === 'empty' && !this.reserved(R, l) && !airborne(l));
     if (!open.length) return;
     const L = C.pick(open);
     content[L] = 'boost';
@@ -255,7 +324,7 @@ export class Spawner {
   /** Release rows pay out: a full coin line along the safe lane, sometimes a second one beside it. */
   breatherCoins(content, R, safe, s0) {
     const lanes = [safe];
-    const other = [0, 1, 2].filter((l) => l !== safe && content[l] === 'empty' && !(R && R.lane === l));
+    const other = [0, 1, 2].filter((l) => l !== safe && content[l] === 'empty' && !this.reserved(R, l));
     if (other.length && Math.random() < 0.5) lanes.push(C.pick(other));
     for (const L of lanes) for (let s = s0 + 1; s < s0 + C.SLOT; s += 2) this.coins.add(C.laneX(L), 0.9, s);
   }
@@ -354,3 +423,5 @@ export class Spawner {
     }
   }
 }
+
+Object.assign(Spawner.prototype, setPieces);

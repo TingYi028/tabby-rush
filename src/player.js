@@ -5,7 +5,7 @@ import { images, makeTexture } from './assets.js';
 import { blobShadowCanvas, bubbleCanvas, makeCanvas } from './textures.js';
 
 // Sprite frames are 512x640 with the feet at y=612; the hero stands ~1.95 units tall.
-const FRAME_H = 2.2;
+const FRAME_H = 2.45;
 const FRAME_W = FRAME_H * 0.8;
 const FEET = (640 - 612) / 640;
 
@@ -168,7 +168,7 @@ export class Player {
 
     // vertical
     const s = w.dist;
-    const g = w.spawner.groundAt(this.x, s, this.y);
+    const g = w.spawner.groundAt(this.x, s, this.y, this.prevS);
     if (flying) {
       this.onGround = false;
       this.rollT = 0;
@@ -215,7 +215,7 @@ export class Player {
         ev.push({ type: 'land', hard: fall > 14, onTrain: g > 1, k });
       }
     }
-    this.ground = w.spawner.groundAt(this.x, s, this.y + 0.01);
+    this.ground = w.spawner.groundAt(this.x, s, this.y + 0.01, this.prevS);
 
     // collisions
     if (!this.crashed && !flying) {
@@ -227,9 +227,11 @@ export class Player {
         const half = o.type === 'train' ? 1.15 + 0.3 : 1.1 + 0.28;
         if (Math.abs(this.x - o.x) >= half) continue;
         let hit = false;
+        // barriers may stand on a train roof (o.y0): test relative to their base, only in that height band
+        const y0 = o.y0 || 0;
         if (o.type === 'train') hit = this.y < C.TRAIN_TOP - C.STEP_UP;
-        else if (o.type === 'hurdle') hit = this.y < C.HURDLE_TOP - 0.14;
-        else if (o.type === 'overhead') hit = top > C.OVERHEAD_BOTTOM + 0.05;
+        else if (o.type === 'hurdle') hit = this.y - y0 < C.HURDLE_TOP - 0.14 && this.y > y0 - 1;
+        else if (o.type === 'overhead') hit = top - y0 > C.OVERHEAD_BOTTOM + 0.05 && this.y > y0 - 1 && this.y - y0 < C.OVERHEAD_TOP;
         if (!hit) continue;
         if (w.invincible) { ev.push({ type: 'smash', obstacle: o }); continue; }
         const side = o.type === 'train' && Math.abs(prevX - o.x) >= half && this.lane !== this.prevLane;

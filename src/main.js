@@ -15,6 +15,11 @@ import { FX, FX_COLORS } from './fx.js';
 import { AudioFX, store } from './audio.js';
 import { UI, POWER_META, RUSH_ICON } from './ui.js';
 import { TRICK, TRICK_BIT, TRICK_ALL, TRICK_LABEL } from './tricks.js';
+import * as progression from './progression.js';
+import { DAILY, DailyUI, dailyToday, dailyStatus, mulberry32, rowHook, completeDaily, recordDaily } from './daily.js';
+import { REVIVE, ReviveOverlay, reviveCost, clearForRevive } from './revive.js';
+import { THEMES, ZONE, themeIndexAt } from './themes.js';
+import { TUNNEL, resetDirector, nextTunnel } from './director.js';
 
 /* ---------- renderer & post ---------- */
 
@@ -103,6 +108,7 @@ const fmtN = (n) => Math.round(n).toLocaleString('en-US');
 const audio = new AudioFX();
 const ui = new UI({
   play: () => startRun(),
+  retry: () => startRun(!!G.daily),
   pause: () => pause(),
   resume: () => resume(),
   menu: () => toMenu(),
@@ -110,9 +116,10 @@ const ui = new UI({
   rush: () => triggerRush(),
 });
 ui.setMuted(audio.muted);
+progression.init(G, { ui, audio }); // save v1 (migrates best/bank), shop + missions UI
 ui.stats(G.best, G.bank);
 
-const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650));
+const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650)) + progression.multBonus();
 const totalMult = () => multiplier() * (G.power.x2 > 0 ? 2 : 1) * (G.fever > 0 ? 3 : 1);
 
 /* ---------- camera rig ---------- */
@@ -141,7 +148,7 @@ function updateCamera(dt, raw) {
   rig.y = C.damp(rig.y, yNormal + (C.JET_Y + 2.9 - yNormal) * rig.jet, 5, dt);
   rig.trauma = Math.max(0, rig.trauma - raw * 1.5);
   const t = performance.now() / 1000, sh = rig.trauma * rig.trauma;
-  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.3 : 1;
+  const reduce = reduceMQ.matches ? 0.3 : 1;
   const sx = sh * 0.55 * reduce * (Math.sin(t * 41) + Math.sin(t * 23.7 + 1.3)) * 0.5;
   const sy = sh * 0.45 * reduce * (Math.sin(t * 37 + 2) + Math.sin(t * 29.1)) * 0.5;
   // landing dip: a damped spring pulls the camera back up after landImpact() knocks it down
@@ -157,8 +164,7 @@ function updateCamera(dt, raw) {
   const b = G.camBlend;
   const e = b * b * (3 - 2 * b);
   camera.position.lerpVectors(posMenu, posGame, e);
-  const lk = lookMenu.clone().lerp(look, e);
-  camera.lookAt(lk);
+  camera.lookAt(lookMenu.lerp(look, e)); // lookMenu is rebuilt every frame, so lerping it in place is safe
   rig.roll = C.damp(rig.roll, C.clamp((px - rig.x) * -0.055, -0.07, 0.07) * reduce, 6, dt);
   camera.rotateZ(rig.roll * e);
 
@@ -255,11 +261,12 @@ function updateFeel(raw, t) {
 /* ---------- sizing & adaptive quality ---------- */
 
 const quality = { level: 0, acc: 0, n: 0 };
-function dprCap() { return [2, 1.5, 1.15, 1][quality.level]; }
+function dprCap() { return [1.5, 1.25, 1, 0.85][quality.level]; }
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
   if (w < 2 || h < 2) return;
+  idleFrames = 0; // repaint a still screen after a resize
   const dpr = Math.min(window.devicePixelRatio || 1, dprCap());
   renderer.setPixelRatio(dpr);
   renderer.setSize(w, h, false);
@@ -282,7 +289,11 @@ function adapt(raw) {
   if (avg > 1 / 45 && quality.level < 3) {
     quality.level++;
     if (quality.level >= 2) bloom.enabled = false;
-    if (quality.level >= 3) world.sun.shadow.mapSize.set(1024, 1024);
+    if (quality.level >= 3) {
+      world.sun.shadow.mapSize.set(512, 512);
+      world.sun.shadow.map?.dispose();
+      world.sun.shadow.map = null;
+    }
     resize();
   }
 }
@@ -294,7 +305,8 @@ function flash(color, amount) {
   G.flash = Math.max(G.flash, amount);
 }
 
-function startRun() {
+/** `daily`: today's seeded challenge track with its weekday modifier instead of a random one. */
+function startRun(daily = false) {
   audio.unlock();
   audio.play('go', { vol: 0.7 });
   audio.music('game');
@@ -303,12 +315,15 @@ function startRun() {
     rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0,
   });
   G.power = { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 };
+  progression.startRun(G); // run counters + start-with-shield upgrade
   feverFrame.classList.remove('on');
   audio.setRate(1);
   drone.group.visible = false;
   G.camBlend = 0;
   worldRoot.position.z = 0;
-  spawner.reset(true);
+  setupRunMode(daily);
+  // the tunnel schedule shapes the track, so it must come from the same seed as the generator (daily runs)
+  spawner.seeded(() => { resetZones(); spawner.reset(true); });
   resetSurge();
   player.reset();
   fx.clear();
@@ -317,11 +332,14 @@ function startRun() {
   resetTricks();
   ui.show('hud');
   ui.toast('衝啊！', null);
+  dailyKickoff();
 }
 
 function pause() {
   if (G.state !== 'play') return;
   G.state = 'pause';
+  swipe = null;
+  progression.pause();
   ui.show('pause');
   if (audio.ctx) audio.ctx.suspend();
   setTimeout(() => document.getElementById('btn-resume').focus({ preventScroll: true }), 30);
@@ -342,21 +360,28 @@ function toMenu() {
   G.camBlend = 0;
   G.timeScale = 1;
   G.fever = 0;
-  G.power.jetpack = 0;
+  G.power = { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 };
+  Object.assign(G, { rush: 0, rushReady: false, slowmo: 0, hitStop: 0 });
+  ui.rush(0, false, false);
+  audio.setRate(1);
   feverFrame.classList.remove('on');
   drone.group.visible = false;
   spawner.reset(false);
   resetSurge();
   player.reset();
   fx.clear();
+  progression.menu();
+  resetZones();
   ui.stats(G.best, G.bank);
+  dailyUI.refresh();
   ui.show('menu');
   setTimeout(() => document.getElementById('btn-play').focus({ preventScroll: true }), 30);
 }
 
 function grantPower(type) {
   if (type === 'shield') G.power.shield = true;
-  else G.power[type] = C.POWER_TIME[type];
+  else G.power[type] = progression.powerTime(type);
+  progression.track('power', type);
   audio.play('powerup', { vol: 0.8 });
   ui.toast(`${POWER_META[type].label}！`, POWER_META[type].icon);
   const col = { magnet: FX_COLORS.red, sneakers: FX_COLORS.green, x2: FX_COLORS.yellow, shield: FX_COLORS.blue, jetpack: FX_COLORS.yellow }[type];
@@ -364,7 +389,7 @@ function grantPower(type) {
   flash({ magnet: '#ffb3a8', sneakers: '#c8ffb0', x2: '#fff0a0', shield: '#c9f1ff', jetpack: '#ffd59a' }[type], 0.28);
   if (type === 'jetpack') {
     audio.play('jetpack', { vol: 0.9 });
-    spawner.addSkyCoins(G.dist + 16, G.dist + 16 + runSpeed() * (C.POWER_TIME.jetpack - 1.5));
+    spawner.addSkyCoins(G.dist + 16, G.dist + 16 + runSpeed() * (progression.powerTime('jetpack') - 1.5));
   }
 }
 
@@ -376,6 +401,7 @@ function runSpeed() {
 
 function startSurge() {
   G.surge = C.SURGE_TIME;
+  progression.track('boost');
   audio.play('boing', { vol: 0.75, rate: 1.5 });
   ui.popup('加速！', 'cool');
   flash('#9fe6ff', 0.16);
@@ -410,6 +436,7 @@ function updateSurge(dt) {
 
 function addRush(v) {
   if (G.fever > 0 || G.state !== 'play') return;
+  if (G.mod === 'rush2') v *= 2;
   G.rush = Math.min(1, G.rush + v);
   if (G.rush >= 1 && !G.rushReady) rushReady();
 }
@@ -433,6 +460,7 @@ function triggerRush() {
 function startFever() {
   G.fever = C.FEVER_TIME;
   G.power.magnet = Math.max(G.power.magnet, C.FEVER_TIME);
+  progression.track('rush');
   audio.play('rush', { vol: 1 });
   audio.setRate(1.08);
   ui.toast('TABBY RUSH！', RUSH_ICON);
@@ -448,6 +476,56 @@ function endFever() {
   audio.setRate(1);
   feverFrame.classList.remove('on');
   player.invuln = Math.max(player.invuln, 1.2);
+}
+
+/* ---------- zone themes (every ZONE.len m) & dark tunnels ---------- */
+
+const zone = { idx: 0, from: 0, t: 1, tunnel: -1, phase: 0 };
+
+/** Back to 午後 with no tunnel and a fresh tunnel schedule (new run / menu). */
+function resetZones() {
+  Object.assign(zone, { idx: 0, from: 0, t: 1, tunnel: -1, phase: 0 });
+  resetDirector();
+  world.setTheme(0, 0, 1);
+  world.setTunnel(-1);
+}
+
+/** Zone cross-fades and tunnel entry / exit by the hero's distance (the generator reads the same schedule by track s). */
+function updateZones(dt) {
+  if (G.state === 'menu') return;
+  const z = themeIndexAt(G.dist);
+  if (z !== zone.idx) {
+    zone.from = zone.idx;
+    zone.idx = z;
+    zone.t = 0;
+    if (G.state === 'play') ui.toast(THEMES[z].toast, null, THEMES[z].tone);
+  }
+  if (zone.t < 1) {
+    zone.t = Math.min(1, zone.t + dt / ZONE.fade);
+    world.setTheme(zone.from, zone.idx, zone.t);
+  }
+  const tn = nextTunnel(G.dist, 40);   // keep the shell until the camera is well past the exit
+  if (tn !== zone.tunnel) { zone.tunnel = tn; zone.phase = 0; }
+  world.setTunnel(tn >= 0 && tn - G.dist < 330 ? tn : -1);
+  if (G.state !== 'play' || tn < 0) return;
+  if (zone.phase === 0 && G.dist >= tn + 6) {
+    zone.phase = 1;
+    ui.popup('進入隧道！', 'cool');
+  } else if (zone.phase === 1 && G.dist >= tn + TUNNEL.len + 4) {
+    // the camera (~7 m behind) reaches daylight: white-out, then the zone light returns
+    zone.phase = 2;
+    flash('#fffaf0', reduceMQ.matches ? 0.15 : 0.55);
+    ui.popup('重見光明！', 'sun');
+  }
+}
+
+/** Renderer / post / hero values of the current zone look (set by World). */
+function applyLook() {
+  const L = world.look;
+  renderer.toneMappingExposure = L.exposure;
+  bloom.strength = L.bloom;
+  bloom.threshold = L.bloomThreshold;
+  player.material.color.copy(L.hero);
 }
 
 /* ---------- tricks & combo chain ("貓步三連") ---------- */
@@ -467,6 +545,7 @@ function awardTrick(kind, perfect = false, label = null) {
   G.combo++;
   G.comboT = TRICK.window;
   G.chainKinds |= TRICK_BIT[kind] || 0;
+  progression.trick(kind, perfect, G.combo);
   const m = Math.min(G.combo, TRICK.cap);
   const bonus = (perfect ? TRICK.perfectPoints : TRICK.points) * m * totalMult();
   G.score += bonus;
@@ -482,8 +561,9 @@ function awardTrick(kind, perfect = false, label = null) {
   }
   if (G.chainKinds === TRICK_ALL && !G.chainBonus) {
     G.chainBonus = true;
-    addRush(TRICK.rushTriple);
+    progression.track('triple');
     ui.toast('貓步三連！', null, 'hot');
+    addRush(TRICK.rushTriple); // after the toast, so a "RUSH 準備好！" hint isn't overwritten
     audio.play('powerup', { vol: 0.6, rate: 1.3 });
     flash('#ffc4e4', 0.22);
     fx.burst(player.x, player.y + 1.2, -G.dist - 1, RAINBOW[0], 26, 10);
@@ -562,8 +642,112 @@ function gameOver() {
   store.set('best', G.best);
   store.set('bank', G.bank);
   G.state = 'over';
+  progression.endRun(G); // commit missions, save, fill the bank + mission rows on the card
   ui.gameOver({ score, coins: G.coins, dist: Math.floor(G.dist), best: G.best, newBest });
+  dailyOver(score);
   audio.play(newBest ? 'newbest' : 'gameover', { vol: 0.8 });
+}
+
+/* ---------- daily challenge ("每日挑戰") & coin revive ("花金幣復活") ---------- */
+
+// daily: today's challenge { day, seed, mod, claimed, reward } or null; mod: active modifier id ('' = none);
+// revives: revives bought this run (sets the price); reviveT: revive invulnerability left (bubble look)
+Object.assign(G, { daily: null, mod: '', revives: 0, reviveT: 0 });
+const dailyUI = new DailyUI(() => startRun(true));
+const revive = new ReviveOverlay(ui, {
+  accept: () => acceptRevive(),
+  decline: () => declineRevive(),
+  tick: () => audio.play('ui_click', { vol: 0.5, rate: 1.35 }),
+});
+
+/** Per-run setup (before the spawner resets): a daily run seeds the generator and installs its row hook. */
+function setupRunMode(daily) {
+  G.daily = daily ? { ...dailyToday(), claimed: false, reward: null } : null;
+  G.mod = G.daily ? G.daily.mod.id : '';
+  G.revives = 0;
+  G.reviveT = 0;
+  spawner.rng = G.daily ? mulberry32(G.daily.seed) : null;
+  spawner.rowHook = rowHook(G.mod);
+}
+
+/** Start-line effects of today's modifier (the rest are read in place: G.mod in updatePlay/addRush, the row hook). */
+function dailyKickoff() {
+  if (!G.daily) return;
+  const m = G.daily.mod;
+  if (m.id === 'magnet') G.power.magnet = DAILY.magnetTime;
+  ui.toast(`每日挑戰・${m.name}`, m.id === 'magnet' ? POWER_META.magnet.icon : null, 'hot');
+}
+
+/** The first time past DAILY.goal metres today pays the reward (x streak multiplier) straight into the bank. */
+function updateDaily() {
+  if (!G.daily || G.daily.claimed || G.dist < DAILY.goal) return;
+  G.daily.claimed = true;
+  const r = completeDaily(G.daily.day);
+  if (!r) { ui.popup('今日挑戰完成！', 'cool'); return; }
+  G.daily.reward = r;
+  G.bank += r.coins;
+  store.set('bank', G.bank);
+  audio.play('powerup', { vol: 0.8, rate: 1.1 });
+  ui.toast(`每日挑戰完成！+${fmtN(r.coins)}`, 'assets/ui/icon_coin.webp');
+  flash('#fff0a0', 0.25);
+}
+
+/** Game-over card: today's best (+ reward / streak) for a daily run; hides those rows otherwise. */
+function dailyOver(score) {
+  if (!G.daily) { dailyUI.over(null); return; }
+  const rec = recordDaily(G.daily.day, score), st = dailyStatus(G.daily.day);
+  dailyUI.over({ ...rec, done: st.done, streak: st.streak, reward: G.daily.reward });
+}
+
+/** The crash would end the run: offer a coin revive. State 'revive' freezes the world under the overlay. */
+function offerRevive() {
+  G.state = 'revive';
+  revive.open(reviveCost(G.revives), G.bank + G.coins);
+}
+
+function updateRevive(raw) {
+  if (revive.update(raw)) declineRevive();
+}
+
+function acceptRevive() {
+  if (G.state !== 'revive' || !spendCoins(reviveCost(G.revives))) return;
+  G.revives++;
+  clearForRevive(spawner, G.dist, runSpeed(), REVIVE.invuln);
+  player.crashed = false;
+  player.invuln = REVIVE.invuln;
+  player.stumbleT = 0;
+  Object.assign(G, { state: 'play', timeScale: 1, deathT: 0, hitStop: 0, slowmo: 0, reviveT: REVIVE.invuln });
+  ui.show('hud');
+  audio.play('go', { vol: 0.7 });
+  audio.music('game');
+  flash('#c9f1ff', 0.35);
+  fx.burst(player.x, player.y + 1.2, -G.dist - 0.5, FX_COLORS.blue, 34, 9);
+  ui.toast('復活！', POWER_META.shield.icon);
+}
+
+function declineRevive() {
+  if (G.state === 'revive') gameOver();
+}
+
+/** Pay `n` coins, from the bank first and then from this run's coins; false if they don't cover it. */
+function spendCoins(n) {
+  if (G.bank + G.coins < n) return false;
+  const fromBank = Math.min(G.bank, n);
+  G.bank -= fromBank;
+  G.coins -= n - fromBank;
+  store.set('bank', G.bank);
+  return true;
+}
+
+/** Revive invulnerability wears a shield bubble that shrinks away at the end (a real shield takes precedence). */
+function updateReviveGlow(dt) {
+  if (G.reviveT <= 0) return;
+  G.reviveT = Math.max(0, G.reviveT - dt);
+  if (G.power.shield) return;
+  const b = player.bubble, k = Math.min(1, G.reviveT / 0.35), t = performance.now() / 1000;
+  b.visible = G.reviveT > 0;
+  b.position.set(player.x, player.y + 1.05, 0.15);
+  b.scale.set((2.6 + Math.sin(t * 6) * 0.06) * k, (2.6 + Math.cos(t * 5) * 0.06) * k, 1);
 }
 
 /* ---------- per-frame ---------- */
@@ -584,6 +768,7 @@ function handlePlayerEvents(ev) {
         rig.trauma = Math.max(rig.trauma, 0.45);
         flash('#ff8a6a', 0.22);
         ui.toast('被無人機盯上了！', null, 'warn');
+        progression.track('stumble');
         G.combo = 0;
         break;
       case 'crash': crash(e.obstacle); break;
@@ -598,6 +783,7 @@ function handlePlayerEvents(ev) {
       case 'boost': startSurge(); break;
       case 'smash': {
         spawner.smash(e.obstacle);
+        progression.track('smash');
         const bonus = 100 * totalMult();
         G.score += bonus;
         audio.play('smash', { vol: 0.85, rate: C.rand(0.95, 1.1) });
@@ -656,7 +842,8 @@ function updateDrone(dt, t) {
 }
 
 function updatePowerups(dt) {
-  for (const p of [...spawner.powerups]) {
+  for (let i = spawner.powerups.length - 1; i >= 0; i--) {
+    const p = spawner.powerups[i];
     p.t += dt;
     p.obj.group.position.y = p.y + Math.sin(p.t * 3) * 0.18;
     p.obj.icon.material.rotation = Math.sin(p.t * 2.2) * 0.18;
@@ -676,6 +863,8 @@ function stepWorld(dt, speed) {
   const sev = spawner.update(dt, G.dist);
   for (const e of sev) {
     if (e.type === 'horn') audio.play('train_horn', { vol: 0.5, pan: lanePan(e.lane) });
+    else if (e.type === 'swerve') audio.play('train_horn', { vol: 0.85, rate: 1.18, pan: lanePan(e.lane) }); // lane-switch telegraph
+    else if (e.type === 'setpiece' && G.state === 'play') ui.toast('屋頂跑酷！', null, 'hot');
     else if (e.type === 'pass') {
       audio.play('train_pass', { vol: 0.45, pan: lanePan(e.lane) });
       // an oncoming train screaming past in the next lane counts as a near miss
@@ -687,17 +876,21 @@ function stepWorld(dt, speed) {
 function updatePlay(dt) {
   G.time += dt;
   G.speed = C.BASE_SPEED + (C.MAX_SPEED - C.BASE_SPEED) * (1 - Math.exp(-G.dist / C.SPEED_RAMP));
+  if (G.mod === 'fast') G.speed = Math.max(G.speed, DAILY.fastSpeed);
   const v = runSpeed();
   stepWorld(dt, v);
   handlePlayerEvents(player.update(dt, {
     dist: G.dist, speed: v, spawner, power: G.power, jetpack: G.power.jetpack > 0, invincible: G.fever > 0,
   }));
   if (G.state !== 'play') return;
+  updateReviveGlow(dt);
+  updateDaily();
 
   const got = coins.update(dt, G.time, G.dist, player.x, player.y, G.power.magnet > 0);
   let flew = false;
   for (const c of got) {
     G.coins++;
+    if (G.mod === 'coins2') G.coins++;
     G.score += 25 * totalMult();
     fx.coin(c.x, c.y, -c.s);
     audio.coin();
@@ -705,6 +898,7 @@ function updatePlay(dt) {
     if (flyCoin(c)) flew = true;
   }
   if (got.length && !flew) ui.coinPop();
+  if (got.length) progression.track('coin', got.length);
   updatePowerups(dt);
   updateSurge(dt);
 
@@ -725,9 +919,10 @@ function updatePlay(dt) {
   updateCombo(dt);
   G.smashPopT -= dt;
   G.score += v * dt * 0.5 * totalMult();
+  progression.frame(G);
   emitAmbient(dt);
   ui.hud(Math.floor(G.score), G.coins, totalMult(), G.power.x2 > 0 || G.fever > 0);
-  ui.powers(G.power, C.POWER_TIME);
+  ui.powers(G.power, progression.powerMax);
   ui.rush(G.rush, G.fever > 0, G.rushReady);
   G.camBlend = Math.min(1, G.camBlend + dt / 0.9);
 }
@@ -746,12 +941,18 @@ function updateDying(dt, raw) {
   G.timeScale = Math.min(1, 0.3 + G.deathT * 0.9);
   player.update(dt, { dist: G.dist, speed: 0, spawner, power: G.power });
   coins.update(dt, G.time, G.dist, 99, 0, false);
-  if (G.deathT > 1.25) gameOver();
+  if (G.deathT > REVIVE.delay) offerRevive(); // declining or letting the countdown run out ends the run
 }
 
 let last = performance.now();
+let idleFrames = 0;
 function frame(now) {
   requestAnimationFrame(frame);
+  // The menu backdrop runs at ~30 fps; still screens (pause, game over, revive) stop rendering after a few frames.
+  if (G.state === 'menu' && now - last < 30) return;
+  if (G.state === 'pause' || G.state === 'over' || G.state === 'revive') {
+    if (++idleFrames > 3 && G.state !== 'revive') { last = now; return; }
+  } else idleFrames = 0;
   const raw = Math.min(0.05, (now - last) / 1000);
   last = now;
   adapt(raw);
@@ -766,11 +967,14 @@ function frame(now) {
   if (G.state === 'play') updatePlay(dt);
   else if (G.state === 'menu') updateMenu(dt);
   else if (G.state === 'dying') updateDying(dt, stopped ? 0 : raw);
+  else if (G.state === 'revive') updateRevive(raw);
 
   if (G.state !== 'pause') {
     blinkLights(now / 1000);
     fx.update(dt);
-    world.update(dt, G.dist, camera);
+    updateZones(dt);
+    world.update(dt, G.dist, camera, G.state === 'play' ? runSpeed() : G.state === 'menu' ? 9 : 0);
+    applyLook();
     updateCamera(dt, raw);
     player.faceCamera(camera);
     updateDrone(dt, now / 1000);
@@ -785,7 +989,7 @@ function frame(now) {
   const frenzy = G.state === 'play' && G.fever > 0 ? 1 : 0;
   const surge = G.state === 'play' && G.surge > 0 ? 0.8 : 0;
   u.uSpeed.value = C.damp(u.uSpeed.value, Math.max(fast, boost, frenzy, surge), 6, raw);
-  if (canvas.width > 1 && canvas.height > 1) composer.render();
+  if (canvas.width > 1 && canvas.height > 1 && idleFrames <= 3) composer.render();
 }
 
 /* ---------- input ---------- */
@@ -802,6 +1006,8 @@ window.addEventListener('keydown', (e) => {
     else if (e.code === 'Escape' || e.code === 'KeyP') pause();
   } else if (G.state === 'pause' && (e.code === 'Escape' || e.code === 'KeyP')) {
     resume();
+  } else if (G.state === 'revive') {
+    revive.key(e);
   } else if (G.state === 'menu' && (e.code === 'Enter' || e.code === 'Space') && document.activeElement?.tagName !== 'BUTTON') {
     e.preventDefault();
     startRun();
@@ -810,21 +1016,32 @@ window.addEventListener('keydown', (e) => {
 
 let swipe = null;
 const touchLayer = document.getElementById('touch');
-touchLayer.addEventListener('pointerdown', (e) => {
+const startSwipe = (e, onRush = false) => {
   if (G.state !== 'play') return;
-  swipe = { x: e.clientX, y: e.clientY, id: e.pointerId, done: false };
-});
+  swipe = { x: e.clientX, y: e.clientY, id: e.pointerId, done: false, onRush };
+};
+touchLayer.addEventListener('pointerdown', (e) => startSwipe(e));
+// swipes may start on the RUSH button too; a tap without movement still fires RUSH (click)
+document.getElementById('btn-rush').addEventListener('pointerdown', (e) => startSwipe(e, true));
 window.addEventListener('pointermove', (e) => {
-  if (!swipe || swipe.done || e.pointerId !== swipe.id) return;
+  if (!swipe || swipe.done || e.pointerId !== swipe.id || G.state !== 'play') return;
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
   const th = Math.max(22, Math.min(window.innerWidth, window.innerHeight) * 0.045);
   if (Math.hypot(dx, dy) < th) return;
   swipe.done = true;
+  if (swipe.onRush) ui.suppressRush = true;
   player.input(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'roll' : 'jump'));
 });
 window.addEventListener('pointerup', () => { swipe = null; });
 window.addEventListener('pointercancel', () => { swipe = null; });
-document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    pause();
+    if (audio.ctx && audio.ctx.state === 'running') audio.ctx.suspend(); // menu / game-over music too
+  } else if (G.state !== 'pause' && audio.unlocked && audio.ctx) {
+    audio.ctx.resume().catch(() => {});
+  }
+});
 window.addEventListener('blur', () => pause());
 
 /* ---------- boot ---------- */
@@ -853,8 +1070,10 @@ async function boot() {
   spawner.update(0, 300);
   worldRoot.position.z = 300;
   updateCamera(0.016, 0.016);
+  world.prewarm(true, 300);
   renderer.compile(scene, camera);
   composer.render();
+  world.prewarm(false);
   spawner.reset(false);
   worldRoot.position.z = 0;
   world.reset(0);
@@ -864,15 +1083,21 @@ async function boot() {
   G.camBlend = 0;
   ui.show('menu');
   requestAnimationFrame(frame);
-  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge };
+  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression };
+  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer });
+  // Browsers grant audio on pointerup / touchend / click / keydown (not touch pointerdown):
+  // keep listening until the context is really running.
+  const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
   const firstGesture = () => {
     if (audio.unlocked) return;
-    audio.unlock();
     audio.music(G.state === 'play' ? 'game' : 'menu');
-    document.getElementById('hint-sound').hidden = true;
+    audio.unlock().then((ok) => {
+      if (!ok) return;
+      document.getElementById('hint-sound').hidden = true;
+      for (const t of GESTURES) window.removeEventListener(t, firstGesture, true);
+    });
   };
-  window.addEventListener('pointerdown', firstGesture, true);
-  window.addEventListener('keydown', firstGesture, true);
+  for (const t of GESTURES) window.addEventListener(t, firstGesture, true);
 }
 
 boot();

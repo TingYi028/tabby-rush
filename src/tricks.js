@@ -76,7 +76,7 @@ export class TrickTracker {
         let st = o._tk;
         if (!st || s <= far) {
           if (!st) st = o._tk = { minH: Infinity, aligned: true, rolling: true, air: true };
-          st.minH = Math.min(st.minH, p.y - p.ground);
+          st.minH = Math.min(st.minH, p.y - (o.y0 || 0)); // feet above the barrier's base (roof barriers: y0 > 0)
           st.aligned = st.aligned && Math.abs(p.x - o.x) < BAR_HALF;
           st.rolling = st.rolling && p.rollT > 0;
           st.air = st.air && !p.onGround;
@@ -106,7 +106,10 @@ export class TrickTracker {
         drop = true;
       }
       this.trains.splice(i, 1);
-      if (drop) continue;
+      if (drop) {
+        if (!o._nm && !o._void) delete o._nmPending; // a later re-dodge of this train can still count
+        continue;
+      }
       o._nm = true;
       ev.push({ type: 'nearmiss', obstacle: o, graze: inRange(c.ttc, TRICK.graze), ttc: c.ttc });
     }

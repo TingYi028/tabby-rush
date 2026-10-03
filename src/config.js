@@ -26,6 +26,7 @@ export const RAMP_LEN = 7.5;
 // Barriers
 export const HURDLE_TOP = 1.05;
 export const OVERHEAD_BOTTOM = 1.35;
+export const OVERHEAD_TOP = 3.45;    // feet above this clear the beam
 
 // Player
 export const GRAVITY = 64;
