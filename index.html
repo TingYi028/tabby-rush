@@ -30,6 +30,18 @@
   #app { position: fixed; inset: 0; overflow: hidden; }
   #scene { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
   #touch { position: absolute; inset: 0; touch-action: none; }
+  /* oncoming-train warning: positioned over the threatened lane from JS (updateDanger) */
+  #train-warn { position: absolute; left: 0; top: calc(env(safe-area-inset-top, 0px) + clamp(150px, 19vh, 210px));
+    display: grid; justify-items: center; gap: 3px; pointer-events: none; transform-origin: 50% 0; will-change: transform, opacity; }
+  #train-warn svg { width: 58px; height: 52px; filter: drop-shadow(0 3px 0 rgba(59, 29, 14, 0.55)); }
+  #train-warn span { padding: 4px 10px 3px; border: 3px solid var(--ink); border-radius: 999px; background: #e8361f;
+    font: 900 15px/1 var(--font-cjk); color: var(--white); text-shadow: var(--ol-sm); white-space: nowrap; }
+  #train-warn i { width: 16px; height: 16px; margin-top: -4px; border: solid #ff4a2e; border-width: 0 5px 5px 0;
+    transform: rotate(45deg); animation: warn-bob 0.5s ease-in-out infinite alternate; }
+  #train-warn.hot span { background: #ff1f3d; }
+  #train-warn.hot i { animation-duration: 0.28s; }
+  @keyframes warn-bob { to { transform: translateY(6px) rotate(45deg); } }
+  @media (prefers-reduced-motion: reduce) { #train-warn i { animation: none; } }
   button { font: inherit; color: inherit; }
 
   /* ---------- HUD ---------- */
@@ -45,6 +57,26 @@
     text-shadow: var(--ol-sm); }
   #mult.hot { background: linear-gradient(#ffd84d, #ff9a1f); }
   #mult.bump { animation: bump 0.35s ease-out; }
+  /* combo chain: ring = time left in the chain, three trick icons light up as they are collected */
+  #combo { display: flex; align-items: center; gap: 5px; margin-top: 2px; }
+  #combo-ring { --p: 0; --cc: #ffffff; display: grid; place-items: center; width: 46px; height: 46px; border-radius: 50%;
+    border: 3px solid var(--ink); box-shadow: 0 3px 0 var(--ink); box-sizing: border-box;
+    background: conic-gradient(var(--cc) calc(var(--p) * 360deg), rgba(59, 29, 14, 0.55) 0);
+    opacity: 0.6; transform: scale(0.82); transition: opacity 0.2s, transform 0.2s; }
+  #combo-n { display: grid; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: var(--ink);
+    font: 15px/1 var(--font-display); color: var(--cc); font-variant-numeric: tabular-nums; }
+  #combo.on #combo-ring { opacity: 1; transform: none; }
+  #combo[data-tier="3"] #combo-ring { --cc: #ffd23f; }
+  #combo[data-tier="5"] #combo-ring { --cc: #ff7ac8; }
+  #combo-ring.bump { animation: combo-bump 0.35s ease-out; }
+  .combo-kinds { display: flex; gap: 3px; }
+  .combo-kinds i { display: grid; place-items: center; width: 27px; height: 27px; box-sizing: border-box; border-radius: 50%;
+    border: 2px solid var(--ink); background: rgba(59, 29, 14, 0.5); color: rgba(255, 245, 223, 0.6);
+    transition: background 0.15s, color 0.15s; }
+  .combo-kinds svg { width: 17px; height: 17px; }
+  .combo-kinds i.lit { background: var(--sun); color: var(--ink); box-shadow: 0 2px 0 var(--ink); animation: combo-bump 0.35s ease-out; }
+  #combo.all .combo-kinds i.lit { background: #ff9ad0; }
+  @keyframes combo-bump { 0% { transform: scale(1.4); } 100% { transform: scale(1); } }
   .hud-right { display: grid; justify-items: end; gap: 10px; }
   .coin-row { display: flex; align-items: center; gap: 10px; }
   #coin-box { display: flex; align-items: center; gap: 6px; padding: 3px 18px 3px 4px; background: rgba(59, 29, 14, 0.58);
@@ -130,6 +162,29 @@
   #rush.active #rush-fill { background: linear-gradient(90deg, #ff5a5a, #ffd23f, #5cf0a0, #5ab4ff, #c45cff);
     background-size: 200% 100%; animation: rainbow 0.6s linear infinite; }
   @keyframes rainbow { to { background-position: -200% 0; } }
+  /* manual RUSH: the full meter waits for the player (E / Shift / big button) */
+  #rush { position: relative; }
+  .rush-ready { position: absolute; left: 40px; top: 100%; margin-top: 4px; display: none; white-space: nowrap;
+    font: 900 14px/1 var(--font-cjk); color: #fff1a8; text-shadow: var(--ol-sm); }
+  #rush.ready .rush-ready { display: block; animation: pulse 0.7s ease-in-out infinite; }
+  #rush.ready .rush-track { animation: rush-ready 0.45s ease-in-out infinite alternate; }
+  @keyframes rush-ready { from { box-shadow: 0 0 0 0 rgba(255, 210, 63, 0.9); } to { box-shadow: 0 0 0 6px rgba(255, 90, 170, 0.5); } }
+  #btn-rush { position: absolute; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); width: 96px; height: 96px;
+    padding: 0; border-radius: 50%; border: 4px solid var(--ink); pointer-events: auto; touch-action: none; cursor: pointer;
+    display: grid; place-items: center; background: radial-gradient(circle at 50% 32%, #fff3a6, #ffb52e 52%, #ff5a8a);
+    box-shadow: inset 0 -6px 0 rgba(0, 0, 0, 0.14), 0 6px 0 var(--ink), 0 0 0 6px rgba(255, 210, 63, 0.45);
+    animation: rush-btn 0.6s ease-in-out infinite alternate; }
+  #btn-rush img { width: 60px; height: 60px; margin-top: -14px; filter: drop-shadow(0 3px 0 rgba(59, 29, 14, 0.5)); pointer-events: none; }
+  #btn-rush span { position: absolute; left: 0; right: 0; bottom: 11px; font: 19px/1 var(--font-display); color: var(--white);
+    text-shadow: var(--ol-sm); letter-spacing: 0.04em; pointer-events: none; }
+  #btn-rush kbd { position: absolute; top: -8px; right: -8px; min-width: 26px; height: 26px; font-size: 14px; pointer-events: none; }
+  #btn-rush:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--ink); animation: none; }
+  #btn-rush:focus-visible { outline: 4px solid var(--white); outline-offset: 4px; }
+  @keyframes rush-btn { to { transform: scale(1.07);
+    box-shadow: inset 0 -6px 0 rgba(0, 0, 0, 0.14), 0 6px 0 var(--ink), 0 0 0 12px rgba(255, 90, 170, 0.35); } }
+  #toast[data-tone="hot"] span { color: #ffc4e4; }
+  #coin-fly { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+  #coin-fly img { position: absolute; left: 0; top: 0; width: 42px; height: 42px; visibility: hidden; will-change: transform; }
   #popups { position: absolute; left: 50%; bottom: 34%; transform: translateX(-50%); display: grid; justify-items: center;
     gap: 2px; pointer-events: none; }
   .popup { font: 900 clamp(20px, 3.6vw, 30px)/1.1 var(--font-cjk); color: var(--white); text-shadow: var(--ol); white-space: nowrap;
@@ -187,6 +242,7 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .menu-hero, .btn-play, #go-ribbon { animation: none; }
+    #btn-rush, #rush.ready .rush-ready, #rush.ready .rush-track { animation: none; }
   }
 </style>
 <script type="importmap">
@@ -198,6 +254,10 @@
 <div id="app">
   <canvas id="scene" aria-label="Tabby Rush 遊戲畫面"></canvas>
   <div id="touch"></div>
+  <div id="train-warn" aria-hidden="true" hidden>
+    <svg viewBox="0 0 60 54"><path d="M30 4 56 50H4z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="4.5" stroke-linejoin="round"/><rect x="26.8" y="17" width="6.4" height="19" rx="3.2" fill="#3b1d0e"/><circle cx="30" cy="42.5" r="3.6" fill="#3b1d0e"/></svg>
+    <span>列車來了！</span><i></i>
+  </div>
 
   <div id="hud" hidden>
     <div class="hud-top">
@@ -205,9 +265,18 @@
         <span class="score-label">SCORE</span>
         <span id="score">0</span>
         <span id="mult">×1</span>
+        <div id="combo" aria-hidden="true">
+          <span id="combo-ring"><b id="combo-n"></b></span>
+          <span class="combo-kinds">
+            <i title="跳過柵欄"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 21v-5M18 21v-5M4.5 16h15"/><path d="M4 12C5.5 3.5 18.5 3.5 20 12"/><path d="M20 12l-3.6-1.6M20 12l.9-3.9"/></svg></i>
+            <i title="滾過看板"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h17"/><path d="M16.2 13.2A4.6 4.6 0 1 0 16.6 17"/><path d="M16.6 9.6v3.9h-3.9"/></svg></i>
+            <i title="擦身而過"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="8" height="16" rx="2.5"/><path d="M14.5 8h6M15.5 12h5M14.5 16h6"/></svg></i>
+          </span>
+        </div>
         <div id="rush" aria-label="TABBY RUSH 能量">
           <img src="assets/ui/icon_rush.webp" alt="">
           <span class="rush-track"><i id="rush-fill"></i></span>
+          <span class="rush-ready">RUSH 準備好！</span>
         </div>
       </div>
       <div class="hud-right">
@@ -227,9 +296,11 @@
         <svg class="off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z" fill="#3b1d0e"/><path d="M16.5 9.5l5 5M21.5 9.5l-5 5" stroke="#3b1d0e" stroke-width="2.2" stroke-linecap="round"/></svg>
       </button>
     </div>
+    <button id="btn-rush" hidden aria-label="發動 TABBY RUSH"><img src="assets/ui/icon_rush.webp" alt=""><span>RUSH</span><kbd>E</kbd></button>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="popups" aria-hidden="true"></div>
+  <div id="coin-fly" aria-hidden="true"></div>
   <div id="fever-frame" aria-hidden="true"></div>
 
   <section id="loading" class="screen">
@@ -251,6 +322,7 @@
         <span><kbd>←</kbd><kbd>→</kbd> 換道</span>
         <span><kbd>↑</kbd> 跳躍</span>
         <span><kbd>↓</kbd> 翻滾</span>
+        <span><kbd>E</kbd> 發動 RUSH</span>
         <span><kbd>P</kbd> 暫停</span>
       </p>
       <p class="keys" id="hint-touch" hidden>滑動螢幕：左右換道・往上跳・往下翻滾</p>

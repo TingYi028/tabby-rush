@@ -14,6 +14,7 @@ import { Player } from './player.js';
 import { FX, FX_COLORS } from './fx.js';
 import { AudioFX, store } from './audio.js';
 import { UI, POWER_META, RUSH_ICON } from './ui.js';
+import { TRICK, TRICK_BIT, TRICK_ALL, TRICK_LABEL } from './tricks.js';
 
 /* ---------- renderer & post ---------- */
 
@@ -38,10 +39,12 @@ const FinalShader = {
   uniforms: {
     tDiffuse: { value: null }, uTime: { value: 0 }, uSpeed: { value: 0 }, uFlash: { value: 0 },
     uFlashColor: { value: new THREE.Color(1, 1, 1) }, uAspect: { value: 1 }, uVignette: { value: 0.3 },
+    uDanger: { value: 0 },
   },
   vertexShader: /* glsl */`varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse; uniform float uTime, uSpeed, uFlash, uAspect, uVignette; uniform vec3 uFlashColor;
+    uniform float uDanger;
     varying vec2 vUv;
     float hash(float n) { return fract(sin(n) * 43758.5453); }
     void main() {
@@ -49,6 +52,14 @@ const FinalShader = {
       vec2 p = vUv - 0.5; p.x *= uAspect;
       float r = length(p);
       if (uSpeed > 0.001) {
+        // cheap 5-tap radial (zoom) blur toward the centre, only toward the screen edges
+        float k = uSpeed * 0.006 * smoothstep(0.25, 0.9, r);
+        if (k > 0.00005) {
+          vec2 st = (vUv - 0.5) * k;
+          c += texture2D(tDiffuse, vUv - st) + texture2D(tDiffuse, vUv - st * 2.0)
+             + texture2D(tDiffuse, vUv - st * 3.0) + texture2D(tDiffuse, vUv - st * 4.0);
+          c *= 0.2;
+        }
         float a = atan(p.y, p.x);
         float seg = floor(a * 40.0);
         float h = hash(seg + floor(uTime * 16.0) * 7.13);
@@ -56,6 +67,10 @@ const FinalShader = {
         c.rgb = mix(c.rgb, vec3(1.0), streak * uSpeed * 0.45);
       }
       c.rgb *= 1.0 - uVignette * smoothstep(0.42, 1.05, r);
+      // oncoming-train warning: pulsing red edge glow (uDanger already carries the pulse, see updateDanger);
+      // the uv-space radius keeps the side edges lit on portrait screens too
+      float rd = max(r, length(vUv - 0.5) * 1.41421);
+      c.rgb = mix(c.rgb, vec3(1.0, 0.13, 0.08), 0.45 * smoothstep(0.45, 1.0, rd) * uDanger);
       c.rgb = mix(c.rgb, uFlashColor, uFlash);
       gl_FragColor = c;
     }`,
@@ -92,6 +107,7 @@ const ui = new UI({
   resume: () => resume(),
   menu: () => toMenu(),
   toggleSound: () => { audio.unlock(); audio.setMuted(!audio.muted); ui.setMuted(audio.muted); audio.play('ui_click', { vol: 0.6 }); },
+  rush: () => triggerRush(),
 });
 ui.setMuted(audio.muted);
 ui.stats(G.best, G.bank);
@@ -101,7 +117,7 @@ const totalMult = () => multiplier() * (G.power.x2 > 0 ? 2 : 1) * (G.fever > 0 ?
 
 /* ---------- camera rig ---------- */
 
-const rig = { x: 0, y: 4.6, fov: 58, roll: 0, trauma: 0, jet: 0 };
+const rig = { x: 0, y: 4.6, fov: 58, roll: 0, trauma: 0, jet: 0, dip: 0, dipV: 0, kick: 0 };
 const look = new THREE.Vector3();
 const lookMenu = new THREE.Vector3();
 const posMenu = new THREE.Vector3();
@@ -116,7 +132,8 @@ function updateCamera(dt, raw) {
   const camZ = portrait ? 8.2 : 7.0;
   const baseY = portrait ? 4.8 : 4.25;
   const px = player.x, g = player.ground, air = Math.max(0, player.y - g);
-  rig.x = C.damp(rig.x, px * 0.8, 6.5, dt);
+  // lead into a lane change: aim a little past the hero toward the lane they're heading for
+  rig.x = C.damp(rig.x, px * 0.8 + (C.laneX(player.lane) - px) * 0.3, 9, dt);
   // Jetpack: lift the whole rig up into the sky lane.
   const jetOn = G.power.jetpack > 0 || (!player.onGround && player.y > 7.5);
   rig.jet = C.damp(rig.jet, jetOn ? 1 : 0, 2.2, dt);
@@ -127,9 +144,12 @@ function updateCamera(dt, raw) {
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.3 : 1;
   const sx = sh * 0.55 * reduce * (Math.sin(t * 41) + Math.sin(t * 23.7 + 1.3)) * 0.5;
   const sy = sh * 0.45 * reduce * (Math.sin(t * 37 + 2) + Math.sin(t * 29.1)) * 0.5;
-  posGame.set(rig.x + sx, rig.y + sy, camZ);
+  // landing dip: a damped spring pulls the camera back up after landImpact() knocks it down
+  rig.dipV += (-200 * rig.dip - 18 * rig.dipV) * dt;
+  rig.dip += rig.dipV * dt;
+  posGame.set(rig.x + sx, rig.y + sy + rig.dip, camZ);
   const lookNormal = 1.25 + g * 0.85 + air * 0.2;
-  look.set(px * 0.55, lookNormal + (C.JET_Y - 0.8 - lookNormal) * rig.jet, -14);
+  look.set(px * 0.55, lookNormal + (C.JET_Y - 0.8 - lookNormal) * rig.jet + rig.dip * 0.5, -14);
 
   const mt = t * 0.22;
   posMenu.set(Math.sin(mt) * 1.6, 5.4, 10.5);
@@ -139,14 +159,97 @@ function updateCamera(dt, raw) {
   camera.position.lerpVectors(posMenu, posGame, e);
   const lk = lookMenu.clone().lerp(look, e);
   camera.lookAt(lk);
-  rig.roll = C.damp(rig.roll, (px - rig.x) * -0.03, 6, dt);
+  rig.roll = C.damp(rig.roll, C.clamp((px - rig.x) * -0.055, -0.07, 0.07) * reduce, 6, dt);
   camera.rotateZ(rig.roll * e);
 
   const base = portrait ? Math.min(78, Math.max(62, portraitFov(aspect, camZ))) : 58;
   const air2 = !player.onGround && G.power.sneakers > 0 ? 7 : 0;
-  const target = base + (G.state === 'play' ? (G.speed - C.BASE_SPEED) * 0.4 + air2 + (G.fever > 0 ? 9 : 0) + rig.jet * 4 : 0);
+  const target = base + (G.state === 'play' ? (G.speed - C.BASE_SPEED) * 0.55 + air2 + (G.fever > 0 ? 9 : 0) + rig.jet * 4 : 0);
   rig.fov = C.damp(rig.fov, target, 3, dt);
-  if (Math.abs(camera.fov - rig.fov) > 0.01) { camera.fov = rig.fov; camera.updateProjectionMatrix(); }
+  rig.kick = C.damp(rig.kick, 0, 10, dt); // lane-change FOV punch, added on top of the smoothed FOV
+  const fov = rig.fov + rig.kick;
+  if (Math.abs(camera.fov - fov) > 0.01) { camera.fov = fov; camera.updateProjectionMatrix(); }
+}
+
+/* ---------- game feel: hit-stop, landing tiers, oncoming-train warning, speed layers ---------- */
+
+G.hitStop = 0;   // seconds of near-frozen sim left (see frame())
+G.danger = 0;    // smoothed oncoming-train threat 0..1
+G.streakT = 0;   // speed-streak spawn accumulator
+const reduceMQ = matchMedia('(prefers-reduced-motion: reduce)');
+const motionScale = () => (reduceMQ.matches ? 0.3 : 1);
+const STREAK = new THREE.Color(0.85, 0.92, 1.1);
+const warnEl = document.getElementById('train-warn');
+const warnV = new THREE.Vector3();
+const warn = { x: -1 };
+
+/** Freeze the sim for `d` seconds (dt x0.02); camera shake and flashes keep running on raw time. */
+function hitStop(d) { G.hitStop = Math.max(G.hitStop, d); }
+
+/** Run speed 0 (base) .. 1 (max; frenzy overdrive clamps). */
+function speedNorm() { return C.clamp((runSpeed() - C.BASE_SPEED) / (C.MAX_SPEED - C.BASE_SPEED), 0, 1); }
+
+/** Stereo position of a lane relative to the hero. */
+function lanePan(lane) { return C.clamp((lane - player.lane) * 0.7, -1, 1); }
+
+/** Lane switch: a quick FOV punch on top of the smoothed FOV. */
+function laneKick() { rig.kick = Math.min(3, rig.kick + 1.8 * motionScale()); }
+
+/** Landing impact tiers from the player's 'land' event (k 0..1). */
+function landImpact(e) {
+  const k = e.k || 0;
+  if (e.hard || e.onTrain) { audio.play('land', { vol: 0.2 + 0.5 * k }); fx.land(player.x, player.y, -G.dist, 8 + 16 * k); }
+  if (e.hard) rig.trauma = Math.max(rig.trauma, 0.22);
+  if (k > 0) { rig.dip = Math.min(rig.dip, -0.35 * k * motionScale()); rig.dipV = 0; }
+  if (k >= 0.9) { hitStop(0.03); rig.trauma = Math.max(rig.trauma, 0.3); }
+}
+
+/** Stationary sparks along the walls far ahead; the run carries the camera past them, so speed reads from frame one. */
+function emitSpeedStreaks(dt) {
+  if (G.state !== 'play') return;
+  G.streakT += dt * (25 + 70 * speedNorm());
+  for (; G.streakT >= 1; G.streakT -= 1) {
+    const side = Math.random() < 0.5 ? -1 : 1;
+    fx.add.emit(side * C.rand(3.5, 6), C.rand(0.5, 5), -G.dist - 40, 0, 0, 0, C.rand(1.8, 2.2), 0.25, 0.25, STREAK, 0.55, 0, 0);
+  }
+}
+
+/** Oncoming trains in the hero's lane: headlight swell, red screen-edge pulse and a warning chevron over the lane. */
+function updateDanger(raw, t) {
+  const live = G.state === 'play' && G.power.jetpack <= 0;
+  let danger = 0, threat = null;
+  for (const o of spawner.obstacles) {
+    if (o.type !== 'train' || !o.moving) continue;
+    const ahead = o.s0 - G.dist;
+    const d = live && o.lane === player.lane && ahead > 0 ? C.clamp(1 - ahead / 70, 0, 1) : 0;
+    o.obj.setDanger(d, t);
+    if (d > danger) { danger = d; threat = o; }
+  }
+  G.danger = C.damp(G.danger, danger, danger > G.danger ? 30 : 9, raw);
+  // ~2.9 Hz pulse (sin(t*18)), kept shallow and below the 3-flashes/s photosensitivity line
+  const pulse = reduceMQ.matches ? 0.8 : 0.775 + 0.225 * Math.sin(t * 18);
+  finalPass.uniforms.uDanger.value = G.danger * pulse;
+  if (!warnEl) return;
+  if (threat) {
+    // worldRoot is shifted by +dist, so the train front sits at world z = dist - s0
+    camera.updateMatrixWorld();
+    warnV.set(threat.x, C.TRAIN_TOP, G.dist - threat.s0).project(camera);
+    if (warnV.z < 1) warn.x = C.clamp((warnV.x * 0.5 + 0.5) * window.innerWidth, 44, window.innerWidth - 44);
+  }
+  const op = warn.x < 0 ? 0 : C.clamp((G.danger - 0.02) / 0.2, 0, 1);
+  const on = op > 0.01;
+  if (warnEl.hidden === on) warnEl.hidden = !on;
+  if (!on) return;
+  warnEl.style.opacity = op.toFixed(2);
+  warnEl.style.transform = `translate3d(${warn.x.toFixed(1)}px, 0, 0) translateX(-50%) scale(${(0.8 + 0.4 * G.danger).toFixed(3)})`;
+  warnEl.classList.toggle('hot', G.danger > 0.7);
+}
+
+/** Per-frame feel layers that run on raw time: danger warning + speed/slow-mo audio. */
+function updateFeel(raw, t) {
+  updateDanger(raw, t);
+  const slow = G.hitStop > 0 || ((G.state === 'play' || G.state === 'dying') && G.timeScale < 0.99);
+  audio.setIntensity(speedNorm(), slow, G.state === 'play');
 }
 
 /* ---------- sizing & adaptive quality ---------- */
@@ -206,10 +309,12 @@ function startRun() {
   G.camBlend = 0;
   worldRoot.position.z = 0;
   spawner.reset(true);
+  resetSurge();
   player.reset();
   fx.clear();
   world.reset(0);
   ui.last.mult = -1;
+  resetTricks();
   ui.show('hud');
   ui.toast('衝啊！', null);
 }
@@ -241,6 +346,7 @@ function toMenu() {
   feverFrame.classList.remove('on');
   drone.group.visible = false;
   spawner.reset(false);
+  resetSurge();
   player.reset();
   fx.clear();
   ui.stats(G.best, G.bank);
@@ -262,12 +368,66 @@ function grantPower(type) {
   }
 }
 
-function runSpeed() { return G.speed * (G.fever > 0 ? C.FEVER_SPEED : 1); }
+function runSpeed() {
+  return G.speed * Math.min(C.SPEED_MULT_CAP, (G.fever > 0 ? C.FEVER_SPEED : 1) * (G.surge > 0 ? C.SURGE_SPEED : 1));
+}
+
+/* ---------- speed-boost surge ---------- */
+
+function startSurge() {
+  G.surge = C.SURGE_TIME;
+  audio.play('boing', { vol: 0.75, rate: 1.5 });
+  ui.popup('加速！', 'cool');
+  flash('#9fe6ff', 0.16);
+  rig.trauma = Math.max(rig.trauma, 0.15);
+  fx.burst(player.x, 0.4, -G.dist - 1, FX_COLORS.blue, 20, 9);
+}
+
+function resetSurge() {
+  G.surge = 0;
+  G.surgeT = 0;
+  G.musicRate = 1;
+  audio.setTempo(false);
+}
+
+/** Tick the surge and keep the soundtrack's pace in step with surge / frenzy. */
+function updateSurge(dt) {
+  if (G.surge > 0) {
+    G.surge = Math.max(0, G.surge - dt);
+    G.surgeT -= dt;
+    if (G.surgeT <= 0) {
+      G.surgeT = 0.03;
+      fx.trail(player.x + C.rand(-0.45, 0.45), player.y + C.rand(0.1, 1.3), -G.dist + 0.3, FX_COLORS.blue);
+    }
+  }
+  const rate = G.fever > 0 ? 1.08 : G.surge > 0 ? 1.05 : 1;
+  if (rate !== G.musicRate) {
+    G.musicRate = rate;
+    audio.setRate(rate);
+    audio.setTempo(rate > 1);
+  }
+}
 
 function addRush(v) {
   if (G.fever > 0 || G.state !== 'play') return;
   G.rush = Math.min(1, G.rush + v);
-  if (G.rush >= 1) startFever();
+  if (G.rush >= 1 && !G.rushReady) rushReady();
+}
+
+/** The meter is full: wait for the player to fire it (E / Shift / HUD button). */
+function rushReady() {
+  G.rushReady = true;
+  audio.play('powerup', { vol: 0.5, rate: 1.25 });
+  if (!G.rushHint) {
+    G.rushHint = true;
+    ui.toast(ui.touch ? 'RUSH 準備好！點按鈕' : 'RUSH 準備好！按 E', RUSH_ICON);
+  }
+}
+
+function triggerRush() {
+  if (G.state !== 'play' || G.fever > 0 || !G.rushReady) return;
+  G.rushReady = false;
+  startFever();
 }
 
 function startFever() {
@@ -290,17 +450,83 @@ function endFever() {
   player.invuln = Math.max(player.invuln, 1.2);
 }
 
-function nearMiss(label) {
-  G.combo = G.comboT > 0 ? G.combo + 1 : 1;
-  G.comboT = 3;
-  const bonus = 150 * G.combo * totalMult();
+/* ---------- tricks & combo chain ("貓步三連") ---------- */
+
+function resetTricks() {
+  Object.assign(G, { combo: 0, comboT: 0, chainKinds: 0, chainBonus: false, slowCd: 0, rushReady: false, rushHint: false });
+  ui.combo(0, 0, 0);
+}
+
+/**
+ * Score a trick: kind 'jump' | 'roll' | 'graze'; `perfect` = perfect jump / roll, or a graze for near misses.
+ * Feeds the combo chain (window TRICK.window, multiplier capped at TRICK.cap) and the Rush meter.
+ */
+function awardTrick(kind, perfect = false, label = null) {
+  if (G.state !== 'play') return 0;
+  if (G.combo === 0 || G.comboT <= 0) endChain(false);
+  G.combo++;
+  G.comboT = TRICK.window;
+  G.chainKinds |= TRICK_BIT[kind] || 0;
+  const m = Math.min(G.combo, TRICK.cap);
+  const bonus = (perfect ? TRICK.perfectPoints : TRICK.points) * m * totalMult();
   G.score += bonus;
-  addRush(0.14);
-  audio.play('nearmiss', { vol: 0.85, rate: 1 + Math.min(G.combo, 6) * 0.05 });
-  ui.popup(`${label} +${fmtN(bonus)}${G.combo > 1 ? `　${G.combo} 連擊！` : ''}`, G.combo > 1 ? 'hot' : 'sun');
-  G.slowmo = 0.14;
-  flash('#ffffff', 0.12);
-  rig.trauma = Math.max(rig.trauma, 0.2);
+  addRush(!perfect ? TRICK.rush : kind === 'graze' ? TRICK.rushGraze : TRICK.rushPerfect);
+  const text = label || (TRICK_LABEL[kind] || TRICK_LABEL.graze)[perfect ? 1 : 0];
+  audio.play('nearmiss', { vol: perfect ? 0.85 : 0.45, rate: (perfect ? 1 : 1.15) + m * 0.05 });
+  ui.popup(`${text} +${fmtN(bonus)}`, perfect ? 'hot' : 'sun', 1 + 0.1 * m);
+  if (perfect) {
+    hitStop(0.04);
+    flash('#ffffff', 0.12);
+    rig.trauma = Math.max(rig.trauma, 0.2);
+    if (G.slowCd <= 0) { G.slowmo = TRICK.slowmo; G.slowCd = TRICK.slowmoCooldown; }
+  }
+  if (G.chainKinds === TRICK_ALL && !G.chainBonus) {
+    G.chainBonus = true;
+    addRush(TRICK.rushTriple);
+    ui.toast('貓步三連！', null, 'hot');
+    audio.play('powerup', { vol: 0.6, rate: 1.3 });
+    flash('#ffc4e4', 0.22);
+    fx.burst(player.x, player.y + 1.2, -G.dist - 1, RAINBOW[0], 26, 10);
+  }
+  return bonus;
+}
+
+/** Legacy hook (debug): a graze-grade near miss. */
+function nearMiss(label) { return awardTrick('graze', true, label); }
+
+function endChain(show) {
+  if (show && G.combo >= 3) ui.toast(`×${G.combo} 連擊！`, null, G.combo >= 5 ? 'hot' : 'sun');
+  Object.assign(G, { combo: 0, comboT: 0, chainKinds: 0, chainBonus: false });
+}
+
+function updateCombo(dt) {
+  G.slowCd = Math.max(0, G.slowCd - dt);
+  if (G.combo > 0) {
+    G.comboT = Math.max(0, G.comboT - dt);
+    if (G.comboT === 0) endChain(true);
+  } else if (G.comboT > 0 || G.chainKinds) endChain(false); // chain broken (stumble)
+  ui.combo(G.combo, G.comboT / TRICK.window, G.chainKinds);
+}
+
+/** An oncoming train roared past in the next lane; each train instance scores once (see TrickTracker). */
+function passNearMiss(lane) {
+  let o = null;
+  for (const q of spawner.obstacles) {
+    if (q.type === 'train' && q.moving && q.passed && q.lane === lane && (!o || q.s0 > o.s0)) o = q;
+  }
+  if (o) {
+    if (o._nm || o._nmPending || o._void) return;
+    o._nm = true;
+  }
+  awardTrick('graze', false, '呼嘯而過！');
+}
+
+const coinV = new THREE.Vector3();
+/** Launch the HUD coin flight from a collected coin's screen position. */
+function flyCoin(c) {
+  coinV.set(c.x, c.y, -c.s + G.dist).project(camera);
+  if (coinV.z > 1 || Math.abs(coinV.x) > 1.1 || Math.abs(coinV.y) > 1.1) return false;
+  return ui.coinFly((coinV.x + 1) * 0.5 * window.innerWidth, (1 - coinV.y) * 0.5 * window.innerHeight);
 }
 
 function crash(o) {
@@ -311,6 +537,7 @@ function crash(o) {
     audio.play('shield_break', { vol: 0.9 });
     fx.burst(player.x, player.y + 1.2, -G.dist - 0.5, FX_COLORS.blue, 40, 10);
     rig.trauma = Math.max(rig.trauma, 0.55);
+    hitStop(0.1);
     flash('#c9f1ff', 0.4);
     ui.toast('護盾擋下了！', POWER_META.shield.icon);
     return;
@@ -319,6 +546,7 @@ function crash(o) {
   G.state = 'dying';
   G.deathT = 0;
   G.timeScale = 0.3;
+  hitStop(0.14);
   audio.play('crash', { vol: 1 });
   audio.music('off');
   rig.trauma = 1;
@@ -343,16 +571,13 @@ function gameOver() {
 function handlePlayerEvents(ev) {
   for (const e of ev) {
     switch (e.type) {
-      case 'lane': audio.play('lane_switch', { vol: 0.35, rate: C.rand(0.95, 1.08) }); break;
+      case 'lane': audio.play('lane_switch', { vol: 0.35, rate: C.rand(0.95, 1.08) }); laneKick(); break;
       case 'jump':
         audio.play('jump', { vol: 0.55, rate: e.sneakers ? 0.85 : 1 });
         if (e.sneakers) fx.burst(player.x, player.y + 0.1, -G.dist, FX_COLORS.green, 16, 5);
         break;
       case 'roll': audio.play('roll', { vol: 0.5 }); break;
-      case 'land':
-        if (e.hard || e.onTrain) { audio.play('land', { vol: 0.55 }); fx.land(player.x, player.y, -G.dist); }
-        if (e.hard) rig.trauma = Math.max(rig.trauma, 0.22);
-        break;
+      case 'land': landImpact(e); break;
       case 'stumble':
         audio.play('stumble', { vol: 0.8 });
         audio.play('drone', { vol: 0.7 });
@@ -362,12 +587,15 @@ function handlePlayerEvents(ev) {
         G.combo = 0;
         break;
       case 'crash': crash(e.obstacle); break;
-      case 'nearmiss': nearMiss('驚險閃過！'); break;
+      case 'nearmiss': awardTrick('graze', e.graze); break;
+      case 'clearHurdle': awardTrick('jump', e.perfect); break;
+      case 'clearOverhead': awardTrick('roll', e.perfect); break;
       case 'pad':
         audio.play('boing', { vol: 0.8 });
         fx.burst(player.x, 0.5, -G.dist, FX_COLORS.yellow, 22, 6);
         rig.trauma = Math.max(rig.trauma, 0.15);
         break;
+      case 'boost': startSurge(); break;
       case 'smash': {
         spawner.smash(e.obstacle);
         const bonus = 100 * totalMult();
@@ -375,7 +603,7 @@ function handlePlayerEvents(ev) {
         audio.play('smash', { vol: 0.85, rate: C.rand(0.95, 1.1) });
         fx.burst(e.obstacle.x, player.y + 1.4, -G.dist - 2.5, FX_COLORS.yellow, 14, 9);
         rig.trauma = Math.max(rig.trauma, 0.3);
-        if (G.smashPopT <= 0) { ui.popup(`粉碎！+${fmtN(bonus)}`, 'hot'); G.smashPopT = 0.35; }
+        if (G.smashPopT <= 0) { ui.popup(`粉碎！+${fmtN(bonus)}`, 'hot'); G.smashPopT = 0.35; hitStop(0.05); }
         break;
       }
       default: break;
@@ -384,6 +612,7 @@ function handlePlayerEvents(ev) {
 }
 
 function emitAmbient(dt) {
+  emitSpeedStreaks(dt);
   G.dustT -= dt;
   if (player.onGround && !player.crashed && G.dustT <= 0) {
     G.dustT = player.rollT > 0 ? 0.025 : 0.055;
@@ -446,11 +675,11 @@ function stepWorld(dt, speed) {
   worldRoot.position.z = G.dist;
   const sev = spawner.update(dt, G.dist);
   for (const e of sev) {
-    if (e.type === 'horn') audio.play('train_horn', { vol: 0.5 });
+    if (e.type === 'horn') audio.play('train_horn', { vol: 0.5, pan: lanePan(e.lane) });
     else if (e.type === 'pass') {
-      audio.play('train_pass', { vol: 0.45 });
+      audio.play('train_pass', { vol: 0.45, pan: lanePan(e.lane) });
       // an oncoming train screaming past in the next lane counts as a near miss
-      if (G.state === 'play' && Math.abs(e.lane - player.lane) === 1 && player.y < C.TRAIN_TOP && G.power.jetpack <= 0) nearMiss('呼嘯而過！');
+      if (G.state === 'play' && Math.abs(e.lane - player.lane) === 1 && player.y < C.TRAIN_TOP && G.power.jetpack <= 0) passNearMiss(e.lane);
     }
   }
 }
@@ -466,15 +695,18 @@ function updatePlay(dt) {
   if (G.state !== 'play') return;
 
   const got = coins.update(dt, G.time, G.dist, player.x, player.y, G.power.magnet > 0);
+  let flew = false;
   for (const c of got) {
     G.coins++;
     G.score += 25 * totalMult();
     fx.coin(c.x, c.y, -c.s);
     audio.coin();
     addRush(0.011);
+    if (flyCoin(c)) flew = true;
   }
-  if (got.length) ui.coinPop();
+  if (got.length && !flew) ui.coinPop();
   updatePowerups(dt);
+  updateSurge(dt);
 
   for (const k of ['magnet', 'sneakers', 'x2', 'jetpack']) {
     if (G.power[k] > 0) {
@@ -490,13 +722,13 @@ function updatePlay(dt) {
     G.rush = G.fever / C.FEVER_TIME;
     if (G.fever === 0) endFever();
   }
-  G.comboT = Math.max(0, G.comboT - dt);
+  updateCombo(dt);
   G.smashPopT -= dt;
   G.score += v * dt * 0.5 * totalMult();
   emitAmbient(dt);
   ui.hud(Math.floor(G.score), G.coins, totalMult(), G.power.x2 > 0 || G.fever > 0);
   ui.powers(G.power, C.POWER_TIME);
-  ui.rush(G.rush, G.fever > 0);
+  ui.rush(G.rush, G.fever > 0, G.rushReady);
   G.camBlend = Math.min(1, G.camBlend + dt / 0.9);
 }
 
@@ -525,12 +757,15 @@ function frame(now) {
   adapt(raw);
   if (G.state === 'play') {
     G.slowmo = Math.max(0, G.slowmo - raw);
-    G.timeScale = G.slowmo > 0 ? 0.5 : 1;
+    G.timeScale = 1 - 0.55 * Math.min(1, G.slowmo / 0.1); // eases back out over the last 0.1 s
   }
-  const dt = raw * G.timeScale;
+  // hit-stop: near-freeze the sim for a few frames; shake/flash/post keep running on raw time
+  const stopped = G.hitStop > 0;
+  G.hitStop = Math.max(0, G.hitStop - raw);
+  const dt = raw * (stopped ? 0.02 : G.timeScale);
   if (G.state === 'play') updatePlay(dt);
   else if (G.state === 'menu') updateMenu(dt);
-  else if (G.state === 'dying') updateDying(dt, raw);
+  else if (G.state === 'dying') updateDying(dt, stopped ? 0 : raw);
 
   if (G.state !== 'pause') {
     blinkLights(now / 1000);
@@ -541,13 +776,15 @@ function frame(now) {
     updateDrone(dt, now / 1000);
   }
   G.flash = Math.max(0, G.flash - raw * 2.2);
+  updateFeel(raw, now / 1000);
   const u = finalPass.uniforms;
   u.uFlash.value = G.flash;
   u.uTime.value = now / 1000;
-  const fast = G.state === 'play' ? C.clamp((G.speed - 25) / 8, 0, 1) * 0.6 : 0;
+  const fast = G.state === 'play' ? 0.15 + 0.55 * C.clamp((G.speed - 20) / 15, 0, 1) : 0;
   const boost = G.state === 'play' && ((G.power.sneakers > 0 && !player.onGround) || G.power.jetpack > 0) ? 0.7 : 0;
   const frenzy = G.state === 'play' && G.fever > 0 ? 1 : 0;
-  u.uSpeed.value = C.damp(u.uSpeed.value, Math.max(fast, boost, frenzy), 6, raw);
+  const surge = G.state === 'play' && G.surge > 0 ? 0.8 : 0;
+  u.uSpeed.value = C.damp(u.uSpeed.value, Math.max(fast, boost, frenzy, surge), 6, raw);
   if (canvas.width > 1 && canvas.height > 1) composer.render();
 }
 
@@ -561,6 +798,7 @@ window.addEventListener('keydown', (e) => {
   if (G.state === 'play') {
     const a = KEYS[e.code];
     if (a) { e.preventDefault(); if (!e.repeat) player.input(a); }
+    else if (e.code === 'KeyE' || e.code === 'ShiftLeft' || e.code === 'ShiftRight') { e.preventDefault(); if (!e.repeat) triggerRush(); }
     else if (e.code === 'Escape' || e.code === 'KeyP') pause();
   } else if (G.state === 'pause' && (e.code === 'Escape' || e.code === 'KeyP')) {
     resume();
@@ -626,7 +864,7 @@ async function boot() {
   G.camBlend = 0;
   ui.show('menu');
   requestAnimationFrame(frame);
-  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss };
+  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge };
   const firstGesture = () => {
     if (audio.unlocked) return;
     audio.unlock();

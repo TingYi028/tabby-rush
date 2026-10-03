@@ -4,6 +4,9 @@ const SFX = ['coin', 'jump', 'roll', 'lane_switch', 'crash', 'powerup', 'land', 
   'train_pass', 'ui_click', 'gameover', 'newbest', 'shield_break', 'go',
   'nearmiss', 'jetpack', 'rush', 'smash', 'boing', 'drone'];
 
+// Doppler sweep applied automatically to these samples: playbackRate [from, to] over seconds.
+const DOPPLER = { train_pass: [1.12, 0.88, 0.5] };
+
 const store = {
   get(k, d) { try { const v = localStorage.getItem(`tabbyrush.${k}`); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem(`tabbyrush.${k}`, JSON.stringify(v)); } catch { /* storage unavailable */ } },
@@ -76,9 +79,62 @@ export class AudioFX {
     this.sfx.connect(this.master);
     this.musicBus = this.ctx.createGain();
     this.musicBus.gain.value = 0.7;
-    this.musicBus.connect(this.master);
+    this.buildLayers();
     this.groove = new Groove(this.ctx, this.musicBus);
     this.ready = this.loadAll();
+  }
+
+  /**
+   * Music bus -> lowpass (opened wide; closes to 900 Hz in slow-mo) -> master,
+   * plus a looping wind layer (noise -> bandpass -> gain) that rises with run speed.
+   */
+  buildLayers() {
+    const c = this.ctx;
+    this.musicLP = c.createBiquadFilter();
+    this.musicLP.type = 'lowpass';
+    this.musicLP.frequency.value = 18000;
+    this.musicLP.Q.value = 0.7;
+    this.musicBus.connect(this.musicLP).connect(this.master);
+    const len = c.sampleRate * 2, noise = c.createBuffer(1, len, c.sampleRate), d = noise.getChannelData(0);
+    for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    this.wind = c.createBufferSource();
+    this.wind.buffer = noise;
+    this.wind.loop = true;
+    this.windBP = c.createBiquadFilter();
+    this.windBP.type = 'bandpass';
+    this.windBP.frequency.value = 500;
+    this.windBP.Q.value = 0.9;
+    this.windGain = c.createGain();
+    this.windGain.gain.value = 0;
+    this.wind.connect(this.windBP).connect(this.windGain).connect(this.sfx);
+    this.wind.start();
+    this.layer = { wind: -1, band: -1, slow: false };
+    this.baseRate = 1;
+  }
+
+  /**
+   * Per-frame speed layering. speedNorm 0..1 drives the wind (bandpass 500 -> 1800 Hz, gain up to 0.14,
+   * silent unless `playing`); `slow` (slow-mo / hit-stop) muffles the music and drops its rate to x0.94.
+   */
+  setIntensity(speedNorm, slow, playing = true) {
+    if (!this.windGain) return;
+    const t = this.ctx.currentTime, L = this.layer;
+    const s = Math.max(0, Math.min(1, speedNorm || 0));
+    const g = playing ? 0.025 + 0.115 * s : 0;
+    if (Math.abs(g - L.wind) > 0.002) { this.windGain.gain.setTargetAtTime(g, t, playing ? 0.25 : 0.1); L.wind = g; }
+    const f = 500 + 1300 * s;
+    if (Math.abs(f - L.band) > 8) { this.windBP.frequency.setTargetAtTime(f, t, 0.25); L.band = f; }
+    if (!!slow !== L.slow) {
+      L.slow = !!slow;
+      this.musicLP.frequency.setTargetAtTime(L.slow ? 900 : 18000, t, 0.03);
+      this.applyRate(0.05);
+    }
+  }
+
+  applyRate(tc = 0.25) {
+    if (!this.trackSrc) return;
+    const r = (this.baseRate || 1) * (this.layer && this.layer.slow ? 0.94 : 1);
+    this.trackSrc.src.playbackRate.setTargetAtTime(r, this.ctx.currentTime, tc);
   }
 
   /** Call from a user gesture: resumes the context so sound can play. */
@@ -136,14 +192,27 @@ export class AudioFX {
     if (this.mode) { const m = this.mode; this.mode = null; this.music(m); }
   }
 
-  play(name, { vol = 1, rate = 1 } = {}) {
+  /** `pan` -1..1 places the sound in the stereo field (StereoPannerNode where supported). */
+  play(name, { vol = 1, rate = 1, pan = 0 } = {}) {
     if (!this.ctx || !this.buf[name]) return;
     const src = this.ctx.createBufferSource();
     src.buffer = this.buf[name];
     src.playbackRate.value = rate;
+    const dop = DOPPLER[name];
+    if (dop) {
+      const t = this.ctx.currentTime;
+      src.playbackRate.setValueAtTime(rate * dop[0], t);
+      src.playbackRate.exponentialRampToValueAtTime(rate * dop[1], t + dop[2]);
+    }
     const g = this.ctx.createGain();
     g.gain.value = vol;
-    src.connect(g).connect(this.sfx);
+    let out = this.sfx;
+    if (pan && this.ctx.createStereoPanner) {
+      out = this.ctx.createStereoPanner();
+      out.pan.value = Math.max(-1, Math.min(1, pan));
+      out.connect(this.sfx);
+    }
+    src.connect(g).connect(out);
     src.start();
   }
 
@@ -187,7 +256,13 @@ export class AudioFX {
 
   /** Speed the soundtrack up slightly during frenzy. */
   setRate(r) {
-    if (this.trackSrc) this.trackSrc.src.playbackRate.setTargetAtTime(r, this.ctx.currentTime, 0.25);
+    this.baseRate = r;
+    this.applyRate(0.25);
+  }
+
+  /** setRate() only reaches music files; the synth fallback gets its tempo nudged instead (112 -> 120 BPM). */
+  setTempo(fast) {
+    if (this.groove) this.groove.bpm = fast ? 120 : 112;
   }
 
   setMuted(m) {

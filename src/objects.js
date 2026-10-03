@@ -3,7 +3,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as C from './config.js';
 import { images, makeTexture } from './assets.js';
 import {
-  TRAIN_VARIANTS, TRAIN_UV, PROP_UV, trainAtlasCanvas, propsAtlasCanvas, softDotCanvas,
+  TRAIN_VARIANTS, TRAIN_UV, PROP_UV, trainAtlasCanvas, propsAtlasCanvas, softDotCanvas, makeCanvas,
 } from './textures.js';
 
 /* ---------- UV helpers: pack many parts into one draw call via texture atlases ---------- */
@@ -134,7 +134,20 @@ export class Train {
     this.glow.position.z = 0.4;
     this.lights.material = moving ? this.lightOn : this.lightOff;
     this.glow.visible = moving;
+    this.setDanger(0);
     return cars * C.CAR_LEN + (cars - 1) * C.CAR_GAP;
+  }
+  /** Oncoming-train warning (d 0..1): the headlight glow swells 4.6 -> 7.5 wide and flickers as it bears down. */
+  setDanger(d, t = performance.now() / 1000) {
+    if (!(d > 0)) {
+      if (this.danger !== 0) { this.glow.scale.set(4.6, 2.6, 1); this.glow.material.opacity = 1; this.danger = 0; }
+      return;
+    }
+    this.danger = d;
+    const flicker = 1 - d * (0.16 * (0.5 + 0.5 * Math.sin(t * 43)) + (Math.random() < 0.18 * d ? 0.3 : 0));
+    const w = (4.6 + 2.9 * d) * (0.93 + 0.07 * flicker);
+    this.glow.scale.set(w, w * (2.6 / 4.6), 1);
+    this.glow.material.opacity = flicker;
   }
 }
 
@@ -177,6 +190,7 @@ export function blinkLights(t) {
   const on = Math.sin(t * 7) > 0;
   blinkAmber.color.setRGB(on ? 3.2 : 0.8, on ? 1.7 : 0.45, on ? 0.3 : 0.1);
   blinkRed.color.setRGB(on ? 0.9 : 4, on ? 0.15 : 0.5, on ? 0.12 : 0.35);
+  if (boostTex) boostTex.offset.y = -((t * 1.4) % 1); // boost-strip chevrons stream forward
 }
 
 let hurdleGeo, hurdleHull, hurdleLights;
@@ -268,6 +282,63 @@ export class JumpPad {
     }));
     this.glow.scale.set(3, 1.4, 1);
     this.glow.position.y = 0.6;
+    this.group.add(m, this.glow);
+  }
+}
+
+/* ---------- speed-boost strip (flat, lies on the sleepers between the rails) ---------- */
+
+let boostGeo, boostTex, boostMat;
+/** Two chevrons (cyan, yellow) per tile, pointing up = forward along the track; tiles vertically. */
+function boostStripCanvas() {
+  const W = 128, H = 256, c = makeCanvas(W, H), g = c.getContext('2d');
+  g.fillStyle = 'rgba(24, 110, 150, 0.55)';
+  g.fillRect(0, 0, W, H);
+  g.fillStyle = '#8ff8ff';
+  g.fillRect(0, 0, 7, H);
+  g.fillRect(W - 7, 0, 7, H);
+  ['#5ff4ff', '#ffe14a'].forEach((col, i) => {
+    const y = i * 128 + 22;
+    g.beginPath();
+    g.moveTo(W / 2, y);
+    g.lineTo(W - 16, y + 48);
+    g.lineTo(W - 16, y + 80);
+    g.lineTo(W / 2, y + 32);
+    g.lineTo(16, y + 80);
+    g.lineTo(16, y + 48);
+    g.closePath();
+    g.shadowColor = col;
+    g.shadowBlur = 12;
+    g.fillStyle = col;
+    g.fill();
+  });
+  return c;
+}
+function buildBoost() {
+  boostGeo = new THREE.PlaneGeometry(1.3, C.BOOST_LEN);
+  boostGeo.rotateX(-Math.PI / 2);
+  boostGeo.translate(0, 0.15, -C.BOOST_LEN / 2);
+  boostTex = makeTexture(boostStripCanvas(), { repeat: true });
+  boostTex.repeat.set(1, 2);
+  // over-bright so the chevrons catch the bloom pass
+  boostMat = new THREE.MeshBasicMaterial({
+    map: boostTex, color: new THREE.Color(1.8, 1.8, 1.8), transparent: true, depthWrite: false,
+    polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+  });
+}
+
+export class BoostStrip {
+  constructor(mats) {
+    if (!boostGeo) buildBoost();
+    this.group = new THREE.Group();
+    const m = new THREE.Mesh(boostGeo, boostMat);
+    m.renderOrder = 2;
+    this.glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: mats.glowTex, color: 0x5ff4ff, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.7,
+    }));
+    this.glow.scale.set(2.8, 1.3, 1);
+    this.glow.position.set(0, 0.45, -C.BOOST_LEN / 2);
+    this.glow.renderOrder = 3;
     this.group.add(m, this.glow);
   }
 }

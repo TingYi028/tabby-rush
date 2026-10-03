@@ -44,6 +44,10 @@ export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14, jetpack: 7.5 };
 // Thrills
 export const JET_Y = 10.4;          // jetpack cruise height (above the gantries)
 export const PAD_JUMP_H = 5.2;      // spring pad launch height (clears train roofs)
+export const BOOST_LEN = 5.5;       // speed-boost strip length on the sleepers
+export const SURGE_TIME = 3;        // speed surge after running over a boost strip
+export const SURGE_SPEED = 1.25;
+export const SPEED_MULT_CAP = 1.5;  // frenzy x surge never exceeds this
 export const FEVER_TIME = 6.5;      // TABBY RUSH frenzy duration
 export const FEVER_SPEED = 1.3;
 

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import * as C from './config.js';
+import { TrickTracker, TRICK } from './tricks.js';
 import { images, makeTexture } from './assets.js';
 import { blobShadowCanvas, bubbleCanvas, makeCanvas } from './textures.js';
 
@@ -79,6 +80,7 @@ export class Player {
     this.jetpack.renderOrder = 5;
     this.jetpack.visible = false;
     scene.add(this.jetpack);
+    this.tricks = new TrickTracker();
     this.reset();
   }
 
@@ -97,6 +99,8 @@ export class Player {
     this.runPhase = 0;
     this.sx = 1;
     this.sy = 1;
+    this.svx = 0;
+    this.svy = 0;
     this.tilt = 0;
     this.invuln = 0;
     this.crashed = false;
@@ -136,7 +140,7 @@ export class Player {
           this.leanT = 0.2;
           this.leanDir = a === 'left' ? -1 : 1;
           ev.push({ type: 'lane' });
-          if (close) ev.push({ type: 'nearmiss', obstacle: close });
+          if (close) this.tricks.watchTrain(close, w.dist, w.speed);
         } else if (flying) {
           // no jumping or rolling while the jetpack is lit
         } else if (a === 'jump' && (this.onGround || this.coyote > 0)) {
@@ -186,6 +190,15 @@ export class Player {
           break;
         }
       }
+      // speed-boost strips: one surge per strip, only when running over it on the ground
+      for (const o of w.spawner.obstacles) {
+        if (o.type !== 'boost' || o.used || !this.onGround || this.crashed || this.y > 0.5 || Math.abs(this.x - o.x) > 1.0) continue;
+        if (s >= o.s0 - 0.3 && s <= o.s0 + o.len) {
+          o.used = true;
+          ev.push({ type: 'boost' });
+          break;
+        }
+      }
     }
     if (!this.onGround && !flying) {
       this.vy -= C.GRAVITY * (this.vy < 0 ? 1.12 : 1) * dt;
@@ -195,8 +208,11 @@ export class Player {
         this.y = g;
         this.vy = 0;
         this.onGround = true;
-        this.sx = 1.16; this.sy = 0.84;
-        ev.push({ type: 'land', hard: fall > 14, onTrain: g > 1 });
+        // impact tier 0..1: a normal hop is ~0.3, sneakers/pad ~0.8, roll-slam or jetpack drop 1
+        const k = C.clamp((fall - 12) / 18, 0, 1);
+        this.sx = 1.1 + 0.22 * k; this.sy = 0.9 - 0.24 * k;
+        this.svx = 0; this.svy = 0;
+        ev.push({ type: 'land', hard: fall > 14, onTrain: g > 1, k });
       }
     }
     this.ground = w.spawner.groundAt(this.x, s, this.y + 0.01);
@@ -205,7 +221,7 @@ export class Player {
     if (!this.crashed && !flying) {
       const top = this.y + this.height;
       for (const o of w.spawner.obstacles) {
-        if (o.type === 'ramp' || o.type === 'pad') continue;
+        if (o.type === 'ramp' || o.type === 'pad' || o.type === 'boost') continue;
         const near = o.s0 - 0.35, far = o.s0 + o.len + 0.35;
         if (s < near || this.prevS > far) continue;
         const half = o.type === 'train' ? 1.15 + 0.3 : 1.1 + 0.28;
@@ -235,11 +251,11 @@ export class Player {
         break;
       }
     }
+    if (!this.crashed) this.tricks.update(this, w, ev, dt, flying);
     this.prevS = s;
 
     // animation
-    this.sx = C.damp(this.sx, 1, 11, dt);
-    this.sy = C.damp(this.sy, 1, 11, dt);
+    this.springSquash(dt);
     this.runPhase += dt * (9.5 + w.speed * 0.36);
     let map, map2 = null, blend = 0, mirror = false, crashGeo = false;
     if (this.crashed) { map = this.frames.crash; crashGeo = true; }
@@ -285,7 +301,16 @@ export class Player {
     return ev;
   }
 
-  /** A train front bearing down in the current lane, close enough that leaving now is a near miss. */
+  /** Squash & stretch recover with a damped spring (slight overshoot) instead of a plain ease. */
+  springSquash(dt) {
+    const K = 260, D = 14;
+    this.svx += (-(this.sx - 1) * K - this.svx * D) * dt;
+    this.svy += (-(this.sy - 1) * K - this.svy * D) * dt;
+    this.sx += this.svx * dt;
+    this.sy += this.svy * dt;
+  }
+
+  /** A train front bearing down in the current lane, close enough that leaving now is a near-miss candidate. */
   closeCall(w) {
     if (this.y >= C.TRAIN_TOP - C.STEP_UP || w.jetpack) return null;
     const s = w.dist;
@@ -293,7 +318,9 @@ export class Player {
       if (o.type !== 'train' || o.lane !== this.lane) continue;
       const ahead = o.s0 - s;
       const reach = o.moving ? 16 : 8.5;
-      if (ahead < 0.4 || ahead > reach) continue;
+      // time-based too, so the graze window stays reachable at top speed
+      const ttc = ahead / Math.max(1, w.speed + (o.moving ? o.speed : 0));
+      if (ahead < 0.4 || (ahead > reach && ttc > TRICK.nearMissTtc)) continue;
       const ramp = w.spawner.obstacles.some((q) => q.type === 'ramp' && q.lane === o.lane && Math.abs(q.s0 + q.len - o.s0) < 0.1);
       if (!ramp) return o;
     }

@@ -1,7 +1,7 @@
 import * as C from './config.js';
-import { Train, Ramp, Hurdle, Overhead, PowerUp, JumpPad } from './objects.js';
+import { Train, Ramp, Hurdle, Overhead, PowerUp, JumpPad, BoostStrip } from './objects.js';
 
-const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad };
+const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad, boost: BoostStrip };
 const POWER_WEIGHTS = [['magnet', 0.24], ['sneakers', 0.18], ['x2', 0.2], ['shield', 0.16], ['jetpack', 0.22]];
 
 function weightedPower() {
@@ -9,6 +9,12 @@ function weightedPower() {
   for (const [t, w] of POWER_WEIGHTS) { if ((r -= w) < 0) return t; }
   return 'magnet';
 }
+
+// Tension/release: difficulty offset for each row of an 8-row cycle. Rows 0-4 climb, row 5 is the
+// gate (a pattern needing 2-3 actions), rows 6-7 are breathers (open track, coins, earlier power-ups).
+const WAVE = [0, 0.08, 0.16, 0.24, 0.32, 0.5, -0.5, -0.5];
+const GATE_ROW = 5;
+const BOOST_CHANCE = 0.68;   // per climb row 0-2, at most one strip per 6 rows (~1 per 10 rows overall)
 
 /**
  * Generates the track in SLOT-long rows. A "safe lane" random-walks one lane at a time and is
@@ -20,7 +26,7 @@ export class Spawner {
     this.root = root;
     this.mats = mats;
     this.coins = coins;
-    this.pools = { train: [], ramp: [], hurdle: [], overhead: [], power: [], pad: [] };
+    this.pools = { train: [], ramp: [], hurdle: [], overhead: [], power: [], pad: [], boost: [] };
     this.obstacles = [];
     this.powerups = [];
     this.reset(false);
@@ -39,6 +45,8 @@ export class Spawner {
     this.reserve = null;
     this.lastMoving = -99;
     this.nextPower = 5 + C.randi(0, 3);
+    this.lastBoost = -99;
+    this.boostLane = -1;
     this.active = active;
   }
 
@@ -132,7 +140,9 @@ export class Spawner {
   genSlot() {
     const k = this.k++;
     const s0 = C.START_GAP + k * C.SLOT;
-    const diff = C.clamp(s0 / 3400, 0, 1);
+    const wave = k % WAVE.length;
+    const gate = wave === GATE_ROW, breather = wave > GATE_ROW;
+    const diff = C.clamp(C.clamp(s0 / 3400, 0, 1) + WAVE[wave], 0, 1);
     const prevBlocked = this.blocked[k - 1] || [false, false, false];
 
     const prevSafe = this.safe;
@@ -149,6 +159,8 @@ export class Spawner {
     }
     this.safe = newSafe;
     const safeSet = new Set([prevSafe, newSafe]);
+    // Gate: a wall of trains around a barrier in the safe lane, or a roll-then-jump double barrier there.
+    const wall = gate && (prevSafe !== newSafe || Math.random() < 0.55);
 
     const content = ['empty', 'empty', 'empty'];
     const blocked = [false, false, false];
@@ -160,10 +172,11 @@ export class Spawner {
         continue;
       }
       if (safeSet.has(L)) {
-        if (prevSafe === newSafe && Math.random() < 0.16 + 0.2 * diff) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+        if (gate && L === prevSafe) content[L] = wall ? (Math.random() < 0.5 ? 'hurdle' : 'overhead') : 'combo';
+        else if (prevSafe === newSafe && Math.random() < 0.16 + 0.2 * diff) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
         continue;
       }
-      const r = Math.random();
+      const r = wall ? 0 : Math.random();
       if (r < 0.34 + 0.3 * diff) {
         content[L] = Math.random() < 0.38 ? 'rampTrain' : 'train';
       } else if (r < 0.52 + 0.25 * diff) {
@@ -172,6 +185,8 @@ export class Spawner {
         content[L] = 'pad';
       }
     }
+    // Never surge straight into a flat train front: the row after a boost strip gets a ramp in that lane.
+    if (this.lastBoost === k - 1 && content[this.boostLane] === 'train') content[this.boostLane] = 'rampTrain';
     for (let L = 0; L < 3; L++) if (content[L] === 'train' || content[L] === 'moving') blocked[L] = true;
 
     // Fairness: from every lane open in the previous row there must be a sideways path to an open lane.
@@ -188,15 +203,19 @@ export class Spawner {
       }
     }
 
+    if (breather) this.breathe(content, blocked);
+    else if (wave < 3 && k > 3) this.maybeBoost(content, R, k, s0);
+
     this.blocked[k] = blocked;
 
     const info = [null, null, null];
     for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff);
 
-    this.placeCoins(content, info, blocked, newSafe, s0, k);
+    if (breather) this.breatherCoins(content, R, newSafe, s0);
+    else this.placeCoins(content, info, blocked, newSafe, s0, k);
 
-    if (k >= this.nextPower) {
-      const lanes = [0, 1, 2].filter((l) => content[l] === 'empty');
+    if (k >= this.nextPower - (breather ? 2 : 0)) {
+      const lanes = [0, 1, 2].filter((l) => content[l] === 'empty' && !(R && R.lane === l));
       if (lanes.length) {
         const L = C.pick(lanes);
         const obj = this.get('power');
@@ -207,6 +226,38 @@ export class Spawner {
         this.nextPower = k + 9 + C.randi(0, 6);
       }
     }
+  }
+
+  /** Breather row (after the fairness pass): clear everything except trains already on the track and an oncoming one. */
+  breathe(content, blocked) {
+    for (let L = 0; L < 3; L++) {
+      if (content[L] === 'body' || content[L] === 'moving') continue;
+      content[L] = 'empty';
+      blocked[L] = false;
+    }
+  }
+
+  /**
+   * A speed-boost strip in an open lane on a climb row; never in a lane kept clear for an oncoming train,
+   * nor right after a pad or hurdle in that lane (the hero would sail over it).
+   */
+  maybeBoost(content, R, k, s0) {
+    if (k - this.lastBoost < 6 || Math.random() > BOOST_CHANCE) return;
+    const airborne = (l) => this.obstacles.some((o) => o.lane === l && (o.type === 'pad' || o.type === 'hurdle') && o.s0 > s0 - C.SLOT && o.s0 < s0);
+    const open = [0, 1, 2].filter((l) => content[l] === 'empty' && !(R && R.lane === l) && !airborne(l));
+    if (!open.length) return;
+    const L = C.pick(open);
+    content[L] = 'boost';
+    this.lastBoost = k;
+    this.boostLane = L;
+  }
+
+  /** Release rows pay out: a full coin line along the safe lane, sometimes a second one beside it. */
+  breatherCoins(content, R, safe, s0) {
+    const lanes = [safe];
+    const other = [0, 1, 2].filter((l) => l !== safe && content[l] === 'empty' && !(R && R.lane === l));
+    if (other.length && Math.random() < 0.5) lanes.push(C.pick(other));
+    for (const L of lanes) for (let s = s0 + 1; s < s0 + C.SLOT; s += 2) this.coins.add(C.laneX(L), 0.9, s);
   }
 
   place(content, L, s0, k, diff) {
@@ -244,6 +295,14 @@ export class Spawner {
         this.addObstacle('pad', obj, L, s0 + 6, 1.4);
         return { at: s0 + 6 };
       }
+      case 'boost':
+        this.addObstacle('boost', this.get('boost'), L, s0 + 4, C.BOOST_LEN);
+        return { at: s0 + 4 };
+      case 'combo':
+        // gate: roll under, then jump, 14 m apart (the next row is always a breather)
+        this.addObstacle('overhead', this.get('overhead'), L, s0 + 5, 0.12);
+        this.addObstacle('hurdle', this.get('hurdle'), L, s0 + 19, 0.12);
+        return { at: s0 + 5, at2: s0 + 19 };
       case 'hurdle':
       case 'overhead': {
         const obj = this.get(content);
@@ -287,7 +346,10 @@ export class Spawner {
       }
     } else if (c === 'overhead') {
       for (let s = s0 + 4; s <= s0 + 16; s += 2) co.add(x, 0.55, s);
-    } else if (c === 'empty') {
+    } else if (c === 'combo') {
+      for (let s = inf.at - 4; s <= inf.at + 2; s += 2) co.add(x, 0.55, s);
+      for (let i = -2; i <= 2; i++) co.add(x, 0.9 + 1.9 * (1 - (i / 3.6) ** 2), inf.at2 + i * 2.1);
+    } else if (c === 'empty' || c === 'boost') {
       for (let s = s0 + 3; s <= s0 + 17; s += 2) co.add(x, 0.9, s);
     }
   }

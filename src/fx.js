@@ -133,9 +133,10 @@ export class FX {
     this.soft.emit(x + rand(-0.25, 0.25), y + 0.08, z + rand(-0.2, 0.2), rand(-0.6, 0.6), rand(0.4, 1.1), rand(0.2, 1.2),
       rand(0.45, 0.7), 0.45 * big, 1.6 * big, Math.random() < 0.5 ? COL.dust : COL.dustDark, 0.42, -0.4, 1.5);
   }
-  land(x, y, z) {
-    for (let i = 0; i < 12; i++) {
-      const a = (i / 12) * Math.PI * 2;
+  land(x, y, z, count = 12) {
+    const n = Math.max(1, Math.round(count));
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
       this.soft.emit(x + Math.cos(a) * 0.3, y + 0.1, z + Math.sin(a) * 0.3, Math.cos(a) * 3.2, rand(0.3, 1), Math.sin(a) * 3.2,
         rand(0.4, 0.6), 0.5, 1.7, COL.dust, 0.5, 0, 3);
     }
