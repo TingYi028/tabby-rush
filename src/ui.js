@@ -2,10 +2,10 @@ const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat('en-US');
 
 const POWER_META = {
-  magnet: { label: '磁鐵吸金', icon: 'assets/ui/icon_magnet.png' },
-  sneakers: { label: '超級彈跳鞋', icon: 'assets/ui/icon_sneakers.png' },
-  x2: { label: '分數 ×2', icon: 'assets/ui/icon_x2.png' },
-  shield: { label: '泡泡護盾', icon: 'assets/ui/icon_shield.png' },
+  magnet: { label: '磁鐵吸金', icon: 'assets/ui/icon_magnet.webp' },
+  sneakers: { label: '超級彈跳鞋', icon: 'assets/ui/icon_sneakers.webp' },
+  x2: { label: '分數 ×2', icon: 'assets/ui/icon_x2.webp' },
+  shield: { label: '泡泡護盾', icon: 'assets/ui/icon_shield.webp' },
 };
 export { POWER_META };
 

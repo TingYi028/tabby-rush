@@ -455,9 +455,9 @@ window.addEventListener('blur', () => pause());
 
 async function boot() {
   ui.show('loading');
-  audio.preload();
-  try { await Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 2500))]); } catch { /* fonts optional */ }
-  await loadImages((p) => ui.loading(p * 0.85));
+  const fonts = Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
+  await Promise.all([fonts, loadImages((p) => ui.loading(p * 0.85))]);
+  audio.preload(); // music downloads after the art so it doesn't slow the first screen
   const mats = buildSharedMaterials();
   world = new World(scene, worldRoot);
   coins = new Coins(worldRoot);
@@ -468,8 +468,8 @@ async function boot() {
 
   // Warm the pools and shader programs so the first obstacles don't hitch.
   spawner.reset(true);
-  spawner.update(0, 900);
-  worldRoot.position.z = 900;
+  spawner.update(0, 300);
+  worldRoot.position.z = 300;
   updateCamera(0.016, 0.016);
   renderer.compile(scene, camera);
   composer.render();

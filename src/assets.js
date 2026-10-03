@@ -1,16 +1,16 @@
 import * as THREE from 'three';
 
 const manifest = {};
-for (let i = 1; i <= 8; i++) manifest[`run${i}`] = `assets/hero/run_0${i}.png`;
+for (let i = 1; i <= 8; i++) manifest[`run${i}`] = `assets/hero/run_0${i}.webp`;
 for (const n of ['jump_01', 'jump_02', 'jump_03', 'roll_01', 'roll_02', 'lean', 'crash', 'portrait']) {
-  manifest[n] = `assets/hero/${n}.png`;
+  manifest[n] = `assets/hero/${n}.webp`;
 }
 for (const n of ['logo', 'icon_coin', 'icon_magnet', 'icon_sneakers', 'icon_x2', 'icon_shield']) {
-  manifest[n] = `assets/ui/${n}.png`;
+  manifest[n] = `assets/ui/${n}.webp`;
 }
-for (let i = 1; i <= 6; i++) manifest[`graffiti${i}`] = `assets/decals/graffiti_0${i}.png`;
+for (let i = 1; i <= 6; i++) manifest[`graffiti${i}`] = `assets/decals/graffiti_0${i}.webp`;
 for (const n of ['skyline_tile', 'facade_01', 'facade_02', 'facade_03', 'facade_04']) {
-  manifest[n] = `assets/env/${n}.png`;
+  manifest[n] = `assets/env/${n}.webp`;
 }
 
 /** Loaded HTMLImageElements by key; a missing file leaves `null` so callers can fall back. */
