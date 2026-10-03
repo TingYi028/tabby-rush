@@ -101,12 +101,14 @@ export class AudioFX {
     let list = {};
     try { const r = await fetch('assets/audio/music.json'); if (r.ok) list = await r.json(); } catch { /* no soundtrack */ }
     this.tracksPending = !!(list.game || list.menu);
+    if (this.tracksPending) this.onMusicLoading?.(true);
     await Promise.all(['game', 'menu'].map(async (k) => {
       if (!list[k]) return;
       const b = await this.fetchBuffer(`assets/audio/${list[k]}`);
       if (b) this.tracks[k] = seamless(this.ctx, b);
     }));
     this.tracksPending = false;
+    this.onMusicLoading?.(false);
     if (this.mode) { const m = this.mode; this.mode = null; this.music(m); }
   }
 

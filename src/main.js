@@ -457,6 +457,7 @@ async function boot() {
   ui.show('loading');
   const fonts = Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
   await Promise.all([fonts, loadImages((p) => ui.loading(p * 0.85))]);
+  audio.onMusicLoading = (on) => { document.getElementById('music-status').hidden = !on; };
   audio.preload(); // music downloads after the art so it doesn't slow the first screen
   const mats = buildSharedMaterials();
   world = new World(scene, worldRoot);
