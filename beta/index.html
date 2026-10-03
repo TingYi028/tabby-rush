@@ -295,6 +295,15 @@
   .revive-keys { display: flex; gap: 14px; justify-content: center; font: 900 14px/1 var(--font-cjk); }
   .revive-keys kbd { min-width: 0; height: 26px; margin-right: 4px; font-size: 14px; }
   @media (pointer: coarse) { .revive-keys { display: none; } }
+  @media (max-height: 520px) {  /* landscape phones: smaller ring, buttons side by side */
+    .revive-card { gap: 8px; padding-block: 12px 16px; }
+    .revive-card h2 { font-size: 30px; }
+    .revive-ring { width: 80px; height: 80px; }
+    .revive-ring span { width: 54px; height: 54px; font-size: 36px; }
+    .revive-actions { grid-auto-flow: column; justify-content: center; align-items: center; }
+    .btn-revive { font-size: 22px; padding: 11px 20px 13px; }
+    #revive .btn-alt { font-size: 18px; padding: 10px 20px 12px; }
+  }
 
   @keyframes bump { 0% { transform: scale(1.5); } 100% { transform: scale(1); } }
   @keyframes flip { 0% { transform: scale(1.35) rotateY(0); } 100% { transform: scale(1) rotateY(360deg); } }
@@ -433,7 +442,7 @@
     100% { opacity: 0; transform: translate(-50%, 0); } }
 
   /* menu layout with the mission panel: the hero portrait gives up height first; scroll (never clip) as a last resort */
-  #menu { overflow-y: auto; align-items: safe center; }
+  #menu { overflow-y: auto; overflow-x: hidden; align-items: safe center; }
   @media (max-width: 820px), (max-aspect-ratio: 1/1) {
     #app > #menu { justify-content: safe center; }
     #menu-meta { order: 4; }
@@ -456,8 +465,13 @@
   @media (max-height: 940px) {
     #over .card, #pause .card { gap: 10px; padding: 18px 16px 20px; }
     #over .go-hero { width: min(150px, 38vw); margin-top: -96px; }
-    #over .go-stats { grid-template-columns: 1fr 1fr; gap: 6px; }
+    #over .go-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
     #over .go-row { padding: 7px 10px; font-size: 14px; }
+    #over .go-row span, #over .go-row b { white-space: nowrap; }
+    #over .go-row.stack { flex-direction: column; align-items: flex-start; justify-content: center; gap: 3px; }
+    #over .go-row.stack b { align-self: flex-end; }
+    #over .go-row.go-today { position: relative; }
+    #over .go-row.go-today i { position: absolute; z-index: 1; top: -8px; left: 8px; margin: 0; padding: 2px 7px; font-size: 11px; }
     #over .go-row.main, #over .go-row:last-child:nth-child(even) { grid-column: 1 / -1; }
     #over .go-row b { font-size: 21px; }
     #over .go-row.main b { font-size: 30px; }
@@ -465,6 +479,24 @@
     #over .card h2, #pause .card h2 { font-size: clamp(28px, 6vw, 36px); }
     #over .btn, #pause .btn { font-size: 24px; padding: 13px 30px 15px; }
     #over .btn-alt, #pause .btn-alt { font-size: 19px; padding: 12px 22px 14px; }
+  }
+  /* short phones (browser bars included): 再跑一次 above the missions, on screen without scrolling */
+  @media (max-height: 740px) { #over .go-meta { order: 1; } }
+  .go-col { display: contents; }
+  /* landscape phones: stats on the left, 再跑一次 + missions on the right */
+  @media (max-height: 520px) and (min-width: 640px) {
+    #over .card { width: min(860px, 100%); grid-template-columns: 1fr 1fr; column-gap: 18px; align-items: start; padding: 14px 16px 16px; }
+    #over .go-col { display: grid; gap: 8px; justify-items: center; align-content: start; min-width: 0; }
+    #over .go-col > * { min-width: 0; max-width: 100%; }
+    #over .card-actions { order: -1; }
+    #over #go-ribbon { right: auto; left: -14px; top: 12px; font-size: 16px; }
+    #over .card h2 { font-size: 28px; }
+    #over .btn { font-size: 21px; padding: 10px 26px 12px; }
+    #over .btn-alt { font-size: 17px; padding: 10px 20px 12px; }
+  }
+  @media (max-width: 340px) and (max-height: 940px) {
+    #over .go-row { padding: 6px 8px; gap: 6px; }
+    #over .go-row img { width: 18px; height: 18px; margin-right: 3px; }
   }
   @media (max-height: 620px) {
     #over { place-items: start center; overflow-y: auto; }
@@ -476,7 +508,8 @@
   }
 
   @media (max-width: 820px), (max-aspect-ratio: 1/1) {
-    #menu { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 14px; padding-inline: 16px; }
+    #menu { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 14px; padding-inline: 16px;
+      padding-top: calc(env(safe-area-inset-top, 0px) + 72px); } /* the logo starts below the corner buttons */
     .menu-side { display: contents; }
     #menu-logo { order: 1; width: min(92vw, 520px); }
     .menu-hero { order: 2; height: min(40vh, 420px); justify-self: center; }
@@ -531,6 +564,25 @@
   .set-name input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
   .btn.btn-small { font-size: 18px; padding: 11px 22px 13px; }
   @media (max-width: 380px) { .set-row { flex-wrap: wrap; } .seg button { padding-inline: 9px; } }
+  /* ---------- how-to-play card (src/help-ui.js) ---------- */
+  .corner.corner-left { right: auto; left: max(16px, env(safe-area-inset-left, 0px)); }
+  .help-card { box-sizing: border-box; width: min(500px, 100%); max-height: calc(100vh - 40px);
+    max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    display: flex; flex-direction: column; gap: 12px; padding: 20px 16px 22px; }
+  .help-card > * { flex: none; }
+  .help-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 8px; padding: 2px 4px 8px; text-align: left; }
+  .help-row { display: grid; gap: 4px; padding: 9px 12px; background: var(--white); border: 3px solid var(--ink); border-radius: 14px; box-shadow: 0 3px 0 var(--ink); }
+  .help-row > b { font: 900 16px/1.2 var(--font-cjk); color: var(--tangerine); text-shadow: 0 2px 0 rgba(59, 29, 14, 0.15); }
+  .card .help-row p { font: 700 14px/1.5 var(--font-cjk); }
+  .help-row > b img { width: 28px; height: 28px; margin: -6px 6px -6px 0; vertical-align: middle; }
+  .help-list:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; border-radius: 10px; }
+  .help-row kbd { min-width: 24px; height: 24px; font-size: 13px; margin: 0 1px; }
+  .help-powers { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+  .help-powers > b { grid-column: 1 / -1; }
+  .help-powers span { display: flex; align-items: center; gap: 6px; font: 900 13px/1.2 var(--font-cjk); }
+  .help-powers img { width: 30px; height: 30px; }
+  @media (max-height: 520px) { .help-card h2 { font-size: 26px; } .help-card { gap: 6px; padding: 10px 14px 12px; } }
+  #help { overflow-y: auto; align-items: safe center; }
   /* ---------- first-run hints (main.js updateTutorial) ---------- */
   #tut-hint { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 7%); transform: translateX(-50%);
     display: grid; justify-items: center; gap: 4px; padding: 10px 22px 14px; border-radius: 26px; background: rgba(59, 29, 14, 0.55);
@@ -630,10 +682,61 @@
   @media (max-height: 520px) and (min-width: 640px) {
     .set-card { width: min(780px, 100%); }
     .set-list { grid-template-columns: 1fr 1fr; align-content: start; }
-    .board-card { width: min(640px, 100%); }
+  }
+  /* landscape phones: tabs / scope / name / back on the left, the list gets the full height on the right */
+  @media (max-height: 520px) and (min-width: 600px) and (min-aspect-ratio: 1001/1000) {
+    .board-card { width: min(760px, 100%); height: calc(100vh - 40px);
+      height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+      display: grid; grid-template-columns: minmax(150px, 200px) minmax(0, 1fr); grid-template-rows: auto auto auto auto 1fr;
+      column-gap: 14px; row-gap: 6px; }
+    .board-card > * { grid-column: 1; }
+    .board-card > .board-body { grid-column: 2; grid-row: 1 / -1; }
+    .board-card > .card-actions { grid-row: -2 / -1; align-self: end; }
+    .board-tabs { flex-direction: column; }
+    .board-tabs button { min-height: 30px; flex: none; }
+    .board-scope { justify-self: center; min-height: 36px; } /* overflow: hidden would let the row shrink under it */
+    .board-scope button { min-height: 30px; padding-block: 2px; }
+    .board-me { flex-direction: column; align-items: stretch; gap: 4px; }
+  }
+  @media (max-height: 360px) and (min-width: 600px) and (min-aspect-ratio: 1001/1000) {
+    .board-card h2, .board-card .board-me { display: none; } /* the tabs name the card; the name is also in 設定 */
   }
   @media (max-height: 940px) { #over .go-social .btn-mini { font-size: 15px; padding: 7px 13px 8px 10px; } #over .go-social { gap: 8px; } }
+  /* menu groups only matter in landscape phones (below); elsewhere their children lay out as before */
+  .menu-main, .menu-aux { display: contents; }
+  @media (max-height: 520px) and (min-aspect-ratio: 1001/1000) {
+    #menu { display: grid; grid-template-columns: minmax(0, 1fr); place-items: safe center; padding-top: calc(env(safe-area-inset-top, 0px) + 20px); padding-inline: max(16px, env(safe-area-inset-left, 0px)) max(16px, env(safe-area-inset-right, 0px)); }
+    #menu .menu-hero { display: none; }
+    #menu .menu-side { display: flex; align-items: center; justify-content: center; gap: clamp(16px, 4vw, 44px); width: 100%; max-width: 900px; }
+    #menu .menu-main { display: grid; gap: 8px; justify-items: center; flex: 0 1 auto; min-width: 0; }
+    #menu .menu-aux { display: grid; gap: 8px; justify-items: center; flex: 0 1 360px; min-width: 0; padding-top: 48px; } /* below the corner buttons */
+    #menu #menu-meta { width: 100%; }
+    #menu #menu-logo { width: min(220px, 28vw); }
+    #menu .btn-play { font-size: 26px; padding: 12px 38px 14px; }
+    #menu .daily-box { gap: 4px; justify-items: center; }
+    #menu .daily-meta { justify-content: center; }
+    #menu .btn-daily { gap: 2px; font-size: 19px; padding: 6px 22px 8px; }
+    #menu .news-chip { font-size: 12px; }
+    #menu .chips { justify-content: center; gap: 6px; }
+    #menu .chip { padding: 4px 9px; gap: 6px; font-size: 14px; white-space: nowrap; }
+    #menu .chip b { font-size: 20px; }
+    #menu .chip img { width: 22px; height: 22px; }
+    #menu .keys { justify-content: center; text-align: center; font-size: 13px; }
+  }
+  @media (max-height: 420px) and (min-aspect-ratio: 1001/1000) {
+    #menu #hint-touch, #menu #hint-keys { display: none; } /* the ? card and the first-run hints teach the controls */
+    #menu .news-chip { display: none; }
+  }
 </style>
+<script>
+  // Browsers without import maps (iOS Safari before 16.4) get them from es-module-shims; others skip it
+  if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap'))) {
+    const s = document.createElement('script');
+    s.async = true;
+    s.src = 'https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js';
+    document.head.appendChild(s);
+  }
+</script>
 <script type="importmap">
   { "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
@@ -702,6 +805,7 @@
   <section id="menu" class="screen" hidden>
     <img class="menu-hero" src="assets/hero/portrait.webp" alt="穿虎斑貓裝的主角">
     <div class="menu-side">
+      <div class="menu-main">
       <img id="menu-logo" src="assets/ui/logo.webp" alt="Tabby Rush">
       <button id="btn-play" class="btn btn-play">開始衝刺</button>
       <div class="daily-box">
@@ -717,7 +821,7 @@
           <span class="daily-info" id="daily-info"></span>
         </div>
       </div>
-      <button class="news-chip" id="news-chip" type="button" hidden><b>NEW</b>全球排行榜・挑戰朋友・特效設定</button>
+      <button class="news-chip" id="news-chip" type="button" hidden><b>NEW</b><span id="news-text">排行榜・挑戰朋友・特效設定</span></button>
       <div class="vs-banner" id="vs-banner" hidden>
         <span><b id="vs-name"></b> 向你下戰帖：<b id="vs-score"></b> 分</span>
         <button id="vs-close" type="button" aria-label="取消挑戰">×</button>
@@ -727,6 +831,8 @@
         <div class="chip"><img src="assets/ui/icon_coin.webp" alt="金幣"><b id="bank">0</b></div>
         <button id="btn-board" class="chip chip-btn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v4.5a5 5 0 0 1-10 0z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/><path d="M7 6H4.5v1.2A3.3 3.3 0 0 0 7.6 10.5M17 6h2.5v1.2a3.3 3.3 0 0 1-3.1 3.3" fill="none" stroke="#3b1d0e" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5v3.5M8.5 20.5h7l-.8-3.5H9.3z" fill="#ff9e22" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>排行榜</button>
       </div>
+      </div>
+      <div class="menu-aux">
       <div class="mis-panel" id="menu-meta">
         <div class="mis-head">
           <span class="mis-title">任務 <b class="mis-lvl">Lv.1</b></span>
@@ -745,7 +851,9 @@
       </p>
       <p class="keys" id="hint-touch" hidden>滑動螢幕：左右換道・往上跳・往下翻滾</p>
       <p class="keys sound-hint" id="hint-sound">點一下畫面開啟音樂</p>
+      </div>
     </div>
+    <button id="btn-help" class="icon-btn corner corner-left" aria-label="怎麼玩"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.6 8.9a3.5 3.5 0 1 1 5 3.2c-1 .5-1.6 1.2-1.6 2.3v.6" fill="none" stroke="#3b1d0e" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="18.6" r="1.6" fill="#3b1d0e"/></svg></button>
     <button id="btn-settings" class="icon-btn corner corner-2" aria-label="設定">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8z" fill="none" stroke="#3b1d0e" stroke-width="2.2"/><path d="M10.2 2.8h3.6l.6 2.6 1.6.9 2.5-.9 1.8 3.1-2 1.8v1.8l2 1.8-1.8 3.1-2.5-.9-1.6.9-.6 2.6h-3.6l-.6-2.6-1.6-.9-2.5.9-1.8-3.1 2-1.8v-1.8l-2-1.8 1.8-3.1 2.5.9 1.6-.9z" fill="none" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>
     </button>
@@ -775,6 +883,7 @@
     <div class="card">
       <img class="go-hero" src="assets/hero/crash.webp" alt="">
       <div id="go-ribbon" hidden>新紀錄！</div>
+      <div class="go-col">
       <h2>撞車啦！</h2>
       <div class="go-stats">
         <div class="go-row main"><span>分數</span><b id="go-score">0</b></div>
@@ -789,6 +898,8 @@
         <button id="btn-board-over" class="btn btn-mini" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v4.5a5 5 0 0 1-10 0z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/><path d="M7 6H4.5v1.2A3.3 3.3 0 0 0 7.6 10.5M17 6h2.5v1.2a3.3 3.3 0 0 1-3.1 3.3" fill="none" stroke="#3b1d0e" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5v3.5M8.5 20.5h7l-.8-3.5H9.3z" fill="#ff9e22" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>排行榜</button>
         <button id="btn-share" class="btn btn-mini btn-share" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 5l6 5.5-6 5.5v-3.3c-4.6-.3-7.6 1.2-10 4.8.6-5.2 3.6-8.6 10-9.3z" fill="#fff" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>挑戰朋友</button>
       </div>
+      </div>
+      <div class="go-col">
       <div class="go-meta" id="go-meta">
         <div class="go-bank"><span>存款</span><img src="assets/ui/icon_coin.webp" alt="金幣"><b id="go-bank">0</b><em class="go-earn" id="go-earn">+0</em></div>
         <div class="go-levelup" id="go-levelup" hidden><b>任務全部完成！</b><span></span></div>
@@ -801,6 +912,7 @@
       <div class="card-actions">
         <button id="btn-retry" class="btn">再跑一次</button>
         <button id="btn-home" class="btn btn-alt">主選單</button>
+      </div>
       </div>
     </div>
   </section>
@@ -815,6 +927,34 @@
       <ul class="shop-list" id="shop-list"></ul>
       <p class="sr-only" id="shop-live" role="status" aria-live="polite"></p>
       <div class="card-actions"><button id="btn-shop-back" class="btn btn-alt" type="button">返回</button></div>
+    </div>
+  </section>
+  <section id="help" class="screen dim" hidden aria-labelledby="help-title">
+    <div class="card help-card">
+      <h2 id="help-title">怎麼玩</h2>
+      <div class="help-list" id="help-list" tabindex="0" role="region" aria-label="遊戲說明">
+        <div class="help-row"><b>操作</b>
+          <p data-touch>左右滑換軌道・往上滑跳・往下滑翻滾，空中往下滑可以急降。</p>
+          <p data-keys><kbd>←</kbd><kbd>→</kbd> 換軌道・<kbd>↑</kbd> 跳・<kbd>↓</kbd> 翻滾（空中按可急降）・<kbd>P</kbd> 暫停</p>
+        </div>
+        <div class="help-row"><b>躲開什麼</b><p>列車（迎面來的會閃紅光警告）、柵欄要跳、DUCK! 看板要滾。列車前有斜坡可以直接跑上車頂。</p></div>
+        <div class="help-row"><b>連擊</b><p>擦身閃過列車、剛好跳過或滾過障礙都算花式動作，4 秒內接下一個就能連擊（最高 ×5）。跳、滾、閃三種都做到是「貓步三連」！</p></div>
+        <div class="help-row"><b><img src="assets/ui/icon_rush.webp" alt="">TABBY RUSH</b>
+          <p data-touch>花式動作和金幣會集滿能量，滿了點右下角按鈕：6.5 秒無敵撞爆一切、分數 ×3。</p>
+          <p data-keys>花式動作和金幣會集滿能量，滿了按 <kbd>E</kbd>：6.5 秒無敵撞爆一切、分數 ×3。</p>
+        </div>
+        <div class="help-row help-powers"><b>道具</b>
+          <span><img src="assets/ui/icon_magnet.webp" alt="">磁鐵吸金</span>
+          <span><img src="assets/ui/icon_sneakers.webp" alt="">彈跳鞋</span>
+          <span><img src="assets/ui/icon_x2.webp" alt="">分數 ×2</span>
+          <span><img src="assets/ui/icon_shield.webp" alt="">護盾（擋一次）</span>
+          <span><img src="assets/ui/icon_jetpack.webp" alt="">噴射背包</span>
+        </div>
+        <div class="help-row"><b>每日挑戰</b><p>大家當天跑同一條賽道，每天的特殊規則都不一樣。跑到 1,000 m 領金幣，連續天數越多領越多。</p></div>
+        <div class="help-row"><b>任務與商店</b><p>一次完成三個任務，起跑倍率永久 +1。金幣可以在商店升級道具時間和開局護盾機率。</p></div>
+        <div class="help-row"><b>排行榜</b><p>結算畫面看名次，按「挑戰朋友」把成績傳給朋友比比看！</p></div>
+      </div>
+      <div class="card-actions"><button id="btn-help-back" class="btn btn-alt" type="button">知道了</button></div>
     </div>
   </section>
   <section id="board" class="screen dim" hidden aria-labelledby="board-title">
@@ -864,7 +1004,7 @@
   <section id="gl-lost" class="screen dim" hidden role="alert">
     <div class="card">
       <h2>畫面暫停了</h2>
-      <p>裝置暫時收回了顯示資源，正在恢復…<br>等不到的話按下面重新載入（紀錄都已存好）。</p>
+      <p>裝置暫時收回了顯示資源，正在恢復…<br>等不到的話按下面重新載入。<br><span id="gl-lost-note">存好的紀錄和金幣都還在。</span></p>
       <div class="card-actions"><button id="btn-reload" class="btn" type="button">重新載入</button></div>
     </div>
   </section>

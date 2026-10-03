@@ -11,6 +11,26 @@ const POWER_META = {
 export const RUSH_ICON = 'assets/ui/icon_rush.webp';
 export { POWER_META };
 
+/**
+ * Long numbers on narrow phones: shrink a game-over value until its row fits, instead of wrapping the label;
+ * a row that still doesn't fit (7-digit score on a 320 px phone) puts the value under its label.
+ */
+function fitStats() {
+  for (const row of document.querySelectorAll('#over .go-row:not([hidden])')) {
+    const b = row.querySelector('b');
+    if (!b) continue;
+    const fits = () => row.scrollWidth <= row.clientWidth + 1;
+    const shrink = () => {
+      b.style.fontSize = '';
+      let px = parseFloat(getComputedStyle(b).fontSize);
+      while (!fits() && px > 12) b.style.fontSize = `${--px}px`;
+    };
+    row.classList.remove('stack');
+    shrink();
+    if (!fits()) { row.classList.add('stack'); shrink(); }
+  }
+}
+
 export class UI {
   constructor(h) {
     this.screens = ['loading', 'menu', 'pause', 'over'];
@@ -37,6 +57,12 @@ export class UI {
       wrap.appendChild(row);
       this.bars[k] = { row, fill: row.querySelector('i') };
     }
+    // game-over stats: refit whenever a value / row changes or the card resizes (rotation, toolbars)
+    const stats = document.querySelector('#over .go-stats');
+    let fitQ = 0;
+    const queueFit = () => { if (!fitQ) fitQ = requestAnimationFrame(() => { fitQ = 0; fitStats(); }); };
+    new MutationObserver(queueFit).observe(stats, { subtree: true, childList: true, characterData: true, attributeFilter: ['hidden'] });
+    if (window.ResizeObserver) new ResizeObserver(queueFit).observe(stats);
   }
 
   show(name) {

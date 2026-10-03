@@ -71,6 +71,19 @@ export function recordLocal({ score, dist, coins, day = 0 }) {
 }
 
 /** Local list: 'all' or 'daily' (today's, empty when the stored day is old). */
+/**
+ * Players from before the leaderboard already have a best score: start their local board with it,
+ * so the first new run isn't announced as "第 1 名" below that best.
+ */
+export function seedLocal(best, dist = 0) {
+  const b = loadLocal();
+  if (b.all.length || !(best > 0) || store.get('board.seeded', false)) return;
+  b.all.push({ n: playerName(), s: Math.floor(best), d: Math.floor(dist), c: 0, t: 0 });
+  memBoard = b;
+  store.set('board', b);
+  store.set('board.seeded', true);
+}
+
 export function localList(kind, today = 0) {
   const b = loadLocal();
   if (kind === 'daily') return b.daily.day === today ? b.daily.list : [];
@@ -143,7 +156,8 @@ export function weekKey(d = new Date()) {
 }
 
 /**
- * Send a finished run to the world board. Resolves { rank, best } or null (off / offline / refused).
+ * Send a finished run to the world board. Resolves { rank, best, week } (rank 0 = no row for this run's board;
+ * week = { rank, best, wk } for normal runs) or null (off / offline / refused).
  * An unsent run is kept (best one per board) and retried by flushPending().
  */
 export async function submitRemote({ score, dist, coins, secs, day = 0 }) {
@@ -158,16 +172,18 @@ export async function submitRemote({ score, dist, coins, secs, day = 0 }) {
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
     const key = boardKey(day);
     const pick = (b) => { const r = list.find((x) => x && x.o_board === b); return r ? { rank: Number(r.o_rank) || 0, best: Number(r.o_best) || score } : null; };
-    const main = pick(key) || pick(list[0]?.o_board);
-    if (!main) return null;
+    // only this run's own board counts as its rank (the server may answer with just the week row, e.g. when the
+    // all-time row was trimmed in the same call)
+    const main = pick(key);
     const wrow = list.find((x) => x && String(x.o_board).startsWith('week:'));
     const week = wrow ? { rank: Number(wrow.o_rank) || 0, best: Number(wrow.o_best) || score, wk: String(wrow.o_board) } : null;
+    if (!main && !week) return null;
     const ranks = store.get('board.ranks', {});
     const keep = ranks && typeof ranks === 'object' ? Object.fromEntries(Object.entries(ranks).filter(([k]) => k === 'all' || k === 'week' || k === key)) : {};
-    keep[key] = main;
+    if (main) keep[key] = main;
     if (week) keep.week = week;
     store.set('board.ranks', keep);
-    return { ...main, week };
+    return { rank: main ? main.rank : 0, best: main ? main.best : score, week };
   } catch (e) {
     // 429 (rate limited), 5xx and network errors wait for a later try; other 4xx = refused for good
     if (!(e.status >= 400 && e.status < 500) || e.status === 429) keepPending(run);

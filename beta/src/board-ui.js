@@ -24,13 +24,24 @@ export class BoardUI {
     this.scopes = [...document.querySelectorAll('#board-scope button')];
     for (const b of this.scopes) b.addEventListener('click', () => { if (this.scope !== b.dataset.scope) { this.scope = b.dataset.scope; this.click(); this.render(); } });
     for (const b of this.tabs) b.addEventListener('click', () => { if (this.tab !== b.dataset.tab) { this.tab = b.dataset.tab; this.click(); this.render(); } });
+    // arrow keys move between tabs / scopes (only the selected one is in the Tab order); landscape stacks the tabs
+    const arrows = (e) => (e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0);
     $('board-tabs').addEventListener('keydown', (e) => {
-      const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+      const d = arrows(e);
       if (!d) return;
       e.preventDefault();
       const vis = this.tabs.filter((b) => !b.hidden);
       const i = vis.findIndex((b) => b.dataset.tab === this.tab);
       const b = vis[(i + d + vis.length) % vis.length];
+      b.click();
+      b.focus();
+    });
+    $('board-scope').addEventListener('keydown', (e) => {
+      const d = arrows(e);
+      if (!d) return;
+      e.preventDefault();
+      const i = this.scopes.findIndex((b) => b.dataset.scope === this.scope);
+      const b = this.scopes[(i + d + this.scopes.length) % this.scopes.length];
       b.click();
       b.focus();
     });

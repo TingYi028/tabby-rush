@@ -24,9 +24,10 @@ import { THEMES, ZONE, themeIndexAt } from './themes.js';
 import { TUNNEL, resetDirector, nextTunnel } from './director.js';
 import { settings, FXP, vibrate } from './settings.js';
 import { SettingsUI } from './settings-ui.js';
-import { recordLocal, submitRemote, initRemote, flushPending, playerName } from './leaderboard.js';
+import { HelpUI } from './help-ui.js';
+import { recordLocal, submitRemote, initRemote, flushPending, playerName, seedLocal, remote } from './leaderboard.js';
 import { BoardUI } from './board-ui.js';
-import { parseChallenge, shareChallenge } from './challenge.js';
+import { parseChallenge, shareChallenge, gameUrl } from './challenge.js';
 import { scoreCard } from './scorecard.js';
 import { DistanceMarkers } from './marker.js';
 
@@ -45,9 +46,18 @@ const camera = new THREE.PerspectiveCamera(58, 1, 0.3, 1800); // near 0.3: 3x th
 const worldRoot = new THREE.Group();
 scene.add(worldRoot);
 
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-pmrem.dispose();
+// The environment map is a render-target texture: three doesn't redraw those after a lost GPU context, so it is rebuilt.
+let envRT = null;
+function buildEnvironment() {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const room = new RoomEnvironment();
+  envRT?.dispose();
+  envRT = pmrem.fromScene(room, 0.04);
+  scene.environment = envRT.texture;
+  room.dispose?.();
+  pmrem.dispose();
+}
+buildEnvironment();
 scene.environmentIntensity = 0.45;
 
 const FinalShader = {
@@ -130,8 +140,10 @@ const ui = new UI({
 ui.setMuted(audio.muted);
 progression.init(G, { ui, audio }); // save v1 (migrates best/bank), shop + missions UI
 new SettingsUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+new HelpUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
 audio.setVolumes(settings.get('music'), settings.get('sfx'));
-initRemote(); // before BoardUI, which waits on it to show the world tab
+initRemote().then(() => { if (G.state === 'menu') showChallenge(); }); // before BoardUI, which waits on it to show the world tab
+seedLocal(G.best, progression.bestDist());
 const boardUI = new BoardUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
 settings.onChange((k) => {
   if (k === 'music' || k === 'sfx') audio.setVolumes(settings.get('music'), settings.get('sfx'));
@@ -490,13 +502,17 @@ function updateMarkers() {
 
 function showChallenge() {
   $('vs-banner').hidden = !G.vs;
-  // one-time "what's new" chip (hidden while a friend's challenge banner is up)
-  $('news-chip').hidden = !!G.vs || store.get('news', '') === NEWS_ID;
+  // one-time "what's new" chip (hidden while a friend's challenge banner is up); it names the world board only once
+  // that is really on, and comes back once for players who saw it before the world board went live
+  $('news-text').textContent = remote.on ? '全球排行榜・挑戰朋友・特效設定' : '排行榜・挑戰朋友・特效設定';
+  $('news-chip').hidden = !!G.vs || newsSeen();
   if (!G.vs) return;
   $('vs-name').textContent = G.vs.name;
   $('vs-score').textContent = fmtN(G.vs.score);
 }
 const NEWS_ID = '2026-10-04';
+const NEWS_ALL = `${NEWS_ID}+world`;
+const newsSeen = () => { const v = store.get('news', ''); return v === NEWS_ALL || (v === NEWS_ID && !remote.on); };
 window.addEventListener('hashchange', () => {
   const vs = parseChallenge();
   if (!vs) return;
@@ -504,7 +520,7 @@ window.addEventListener('hashchange', () => {
   if (G.state === 'menu') showChallenge();
 });
 $('news-chip').addEventListener('click', () => {
-  store.set('news', NEWS_ID);
+  store.set('news', remote.on ? NEWS_ALL : NEWS_ID);
   $('news-chip').hidden = true;
   boardUI.open('menu');
 });
@@ -519,7 +535,9 @@ $('vs-close').addEventListener('click', () => {
 function boardOver(score) {
   const run = { score, dist: Math.floor(G.dist), coins: G.coins, secs: G.time, day: G.daily ? G.daily.day : 0 };
   G.lastRun = run;
-  G.cardP = ui.touch ? scoreCard({ score, dist: run.dist, name: playerName(), host: `${location.origin}${location.pathname}` }) : null;
+  // the share image is drawn now; a tap only uses it once it is ready (waiting would spend the tap's activation)
+  G.card = null;
+  if (ui.touch) scoreCard({ score, dist: run.dist, name: playerName(), host: gameUrl() }).then((f) => { if (G.lastRun === run) G.card = f; }, () => {});
   const rank = recordLocal(run), el = $('go-rank');
   const where = run.day ? '今日挑戰' : '我的紀錄';
   el.textContent = rank ? `${where}第 ${rank} 名${rank === 1 ? '！' : ''}` : '';
@@ -527,8 +545,12 @@ function boardOver(score) {
   submitRemote(run).then((r) => {
     if (!r || G.lastRun !== run || G.state !== 'over') return;
     const wk = !run.day && r.week ? r.week.rank : 0;
-    el.textContent = run.day ? `今日挑戰全球第 ${fmtN(r.rank)} 名${r.rank <= 10 ? '！' : ''}`
-      : wk ? `本週全球第 ${fmtN(wk)} 名${wk <= 10 ? '！' : ''}・總榜第 ${fmtN(r.rank)} 名` : `全球排行第 ${fmtN(r.rank)} 名${r.rank <= 10 ? '！' : ''}`;
+    const top = (n) => (n <= 10 ? '！' : '');
+    const parts = run.day ? [r.rank && `今日挑戰全球第 ${fmtN(r.rank)} 名${top(r.rank)}`]
+      : [wk && `本週全球第 ${fmtN(wk)} 名${top(wk)}`, r.rank && (wk ? `總榜第 ${fmtN(r.rank)} 名` : `全球排行第 ${fmtN(r.rank)} 名${top(r.rank)}`)];
+    const text = parts.filter(Boolean).join('・');
+    if (!text) return;
+    el.textContent = text;
     el.hidden = false;
   });
   const row = $('go-vs-row');
@@ -547,9 +569,8 @@ $('btn-share').addEventListener('click', async (e) => {
   if (!run || btn.dataset.busy) return;
   btn.dataset.busy = '1';
   const info = { score: run.score, dist: run.dist, name: playerName() };
-  // phones share a score card image along with the link (drawn when the card opened: share() needs the tap's activation)
-  const card = G.cardP ? await G.cardP : null;
-  const res = await shareChallenge(info, card);
+  // phones share the score card image along with the link when it is ready; share() must run in the tap's activation
+  const res = await shareChallenge(info, G.card);
   const label = btn.lastChild;
   if (res === 'copied' || res === 'failed') {
     label.textContent = res === 'copied' ? '已複製連結！' : '請截圖分享';
@@ -570,7 +591,7 @@ function pause() {
 }
 
 function resume() {
-  if (G.state !== 'pause') return;
+  if (G.state !== 'pause' || glLost) return;
   G.state = 'play';
   ui.show('hud');
   if (audio.ctx) audio.ctx.resume();
@@ -1197,19 +1218,34 @@ function updateDying(dt, raw) {
 let last = performance.now();
 let idleFrames = 0;
 
+let lastInput = performance.now();
+for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+  window.addEventListener(t, () => { lastInput = performance.now(); }, { capture: true, passive: true });
+}
+
 // Phones may take the GPU back (backgrounded tab, driver reset): pause, say so, and rebuild when it is returned.
-let glLost = false;
+// While the notice is up nothing behind it takes input (a key could otherwise resume the frozen run).
+let glLost = false, bootFailed = false;
+const blockBehind = (on) => { for (const el of document.querySelectorAll('#app > *')) if (el.id !== 'gl-lost') el.inert = on; };
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault(); // lets the browser hand the context back
   glLost = true;
   if (G.state === 'play') pause();
+  const inRun = G.state === 'pause' || G.state === 'dying' || G.state === 'revive';
+  $('gl-lost-note').textContent = inRun ? '重新載入會結束這一局，之前存好的紀錄和金幣都還在。' : '存好的紀錄和金幣都還在。';
   $('gl-lost').hidden = false;
+  blockBehind(true);
+  setTimeout(() => $('btn-reload').focus({ preventScroll: true }), 60); // after pause() has focused 繼續
 });
 canvas.addEventListener('webglcontextrestored', () => {
+  if (bootFailed) { location.reload(); return; } // lost while loading: start over (the files are cached by now)
   glLost = false;
   $('gl-lost').hidden = true;
+  blockBehind(false);
+  buildEnvironment();
   applyQuality(); // render targets and the shadow map are rebuilt at the current size
   idleFrames = 0;
+  if (G.state === 'pause') setTimeout(() => $('btn-resume').focus({ preventScroll: true }), 30);
 });
 $('btn-reload').addEventListener('click', () => location.reload());
 
@@ -1218,7 +1254,8 @@ function frame(now) {
   if (glLost) { last = now; return; }
   // The menu backdrop runs at ~30 fps, play at most ~95 fps; still screens (pause, game over, revive, a card over
   // the menu) stop rendering after a few frames.
-  if (now - last < (G.state === 'menu' ? 30 : 8.6)) return;
+  // a menu nobody has touched for 40 s idles at ~12 fps (laptops left open stay cool); any input brings it back
+  if (now - last < (G.state === 'menu' ? (now - lastInput > 40000 ? 80 : 30) : 8.6)) return;
   if (G.state === 'pause' || G.state === 'over' || G.state === 'revive' || (G.state === 'menu' && OVERLAYS.has(document.body.dataset.screen))) {
     if (++idleFrames > 3 && G.state !== 'revive') { last = now; return; }
   } else idleFrames = 0;
@@ -1272,9 +1309,9 @@ const KEYS = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   ArrowUp: 'jump', KeyW: 'jump', Space: 'jump', ArrowDown: 'roll', KeyS: 'roll',
 };
-const OVERLAYS = new Set(['settings', 'board', 'shop']);
+const OVERLAYS = new Set(['settings', 'board', 'shop', 'help']);
 window.addEventListener('keydown', (e) => {
-  if (OVERLAYS.has(document.body.dataset.screen)) return; // their own handlers take the keys
+  if (glLost || OVERLAYS.has(document.body.dataset.screen)) return; // their own handlers take the keys
   if (G.state === 'play') {
     const a = KEYS[e.code];
     if (a) { e.preventDefault(); if (!e.repeat) player.input(a); }
@@ -1370,12 +1407,12 @@ async function boot() {
   G.state = 'menu';
   G.camBlend = 0;
   ui.show('menu');
-  if (progression.runsPlayed() === 0) store.set('news', NEWS_ID); // brand-new players have nothing to compare with
+  if (progression.runsPlayed() === 0) store.set('news', NEWS_ALL); // brand-new players have nothing to compare with
   showChallenge();
   flushPending();
   requestAnimationFrame(frame);
   if (location.hash === '#debug' || new URLSearchParams(location.search).has('debug')) window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression };
-  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu });
+  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu, scene });
   // Browsers grant audio on pointerup / touchend / click / keydown (not touch pointerdown):
   // keep listening until the context is really running.
   const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
@@ -1391,4 +1428,7 @@ async function boot() {
   for (const t of GESTURES) window.addEventListener(t, firstGesture, true);
 }
 
-boot();
+boot().catch((err) => {
+  if (!glLost && !renderer.getContext().isContextLost()) throw err;
+  bootFailed = true; // the GPU went away mid-load: the notice is (or is about to be) up; its restore starts over
+});

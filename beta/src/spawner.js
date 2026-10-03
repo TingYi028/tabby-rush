@@ -60,7 +60,7 @@ export class Spawner {
     for (let p = Object.getPrototypeOf(obj); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
       for (const m of Object.getOwnPropertyNames(p)) {
         const f = Object.getOwnPropertyDescriptor(p, m).value;
-        if (m === 'constructor' || typeof f !== 'function' || Object.hasOwn(obj, m)) continue;
+        if (m === 'constructor' || typeof f !== 'function' || Object.prototype.hasOwnProperty.call(obj, m)) continue; // (Object.hasOwn: iOS 15.4+)
         const sp = this;
         // fast path outside generation (every frame: setDanger, signs...) allocates nothing
         obj[m] = function () {

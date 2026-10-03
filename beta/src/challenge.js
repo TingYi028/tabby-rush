@@ -19,9 +19,10 @@ export function parseChallenge(hash = location.hash) {
 const HOME = 'https://tingyi028.github.io/tabby-rush/';
 
 /** The game's own address when served from GitHub Pages or a local server, else the public one (iframes, mirrors). */
-function gameUrl() {
+export function gameUrl() {
   const h = location.hostname;
-  return h === 'tingyi028.github.io' || h === '127.0.0.1' || h === 'localhost' ? `${location.origin}${location.pathname}` : HOME;
+  return h === 'tingyi028.github.io' || h === '127.0.0.1' || h === 'localhost'
+    ? `${location.origin}${location.pathname.replace(/index\.html$/, '')}` : HOME;
 }
 
 export function challengeLink({ score, dist, name }) {
