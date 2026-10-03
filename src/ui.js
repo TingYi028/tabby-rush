@@ -6,7 +6,9 @@ const POWER_META = {
   sneakers: { label: '超級彈跳鞋', icon: 'assets/ui/icon_sneakers.webp' },
   x2: { label: '分數 ×2', icon: 'assets/ui/icon_x2.webp' },
   shield: { label: '泡泡護盾', icon: 'assets/ui/icon_shield.webp' },
+  jetpack: { label: '噴射背包', icon: 'assets/ui/icon_jetpack.webp' },
 };
+export const RUSH_ICON = 'assets/ui/icon_rush.webp';
 export { POWER_META };
 
 export class UI {
@@ -52,17 +54,35 @@ export class UI {
     $('bank').textContent = fmt.format(bank);
   }
 
-  hud(score, coins, mult, x2) {
+  hud(score, coins, m, hot) {
     if (score !== this.last.score) { $('score').textContent = fmt.format(score); this.last.score = score; }
     if (coins !== this.last.coins) { $('coins').textContent = fmt.format(coins); this.last.coins = coins; }
-    const m = mult * (x2 ? 2 : 1);
     if (m !== this.last.mult) {
       const el = $('mult');
       el.textContent = `×${m}`;
-      el.classList.toggle('hot', x2);
+      el.classList.toggle('hot', hot);
       el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump');
       this.last.mult = m;
     }
+  }
+
+  /** Frenzy meter: fill 0..1; `active` while TABBY RUSH is running. */
+  rush(fill, active) {
+    const el = $('rush');
+    $('rush-fill').style.transform = `scaleX(${Math.max(0, Math.min(1, fill))})`;
+    el.classList.toggle('full', fill >= 0.999 || active);
+    el.classList.toggle('active', active);
+  }
+
+  /** Floating bonus text above the hero. */
+  popup(text, tone = 'sun') {
+    const wrap = $('popups');
+    const el = document.createElement('div');
+    el.className = `popup tone-${tone}`;
+    el.textContent = text;
+    wrap.appendChild(el);
+    while (wrap.children.length > 3) wrap.firstChild.remove();
+    setTimeout(() => el.remove(), 1200);
   }
 
   coinPop() {

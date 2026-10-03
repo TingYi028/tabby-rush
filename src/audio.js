@@ -1,7 +1,8 @@
 import { Groove } from './music.js';
 
 const SFX = ['coin', 'jump', 'roll', 'lane_switch', 'crash', 'powerup', 'land', 'stumble', 'train_horn',
-  'train_pass', 'ui_click', 'gameover', 'newbest', 'shield_break', 'go'];
+  'train_pass', 'ui_click', 'gameover', 'newbest', 'shield_break', 'go',
+  'nearmiss', 'jetpack', 'rush', 'smash', 'boing', 'drone'];
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(`tabbyrush.${k}`); return v === null ? d : JSON.parse(v); } catch { return d; } },
@@ -182,6 +183,11 @@ export class AudioFX {
     } else {
       this.groove.start(mode);
     }
+  }
+
+  /** Speed the soundtrack up slightly during frenzy. */
+  setRate(r) {
+    if (this.trackSrc) this.trackSrc.src.playbackRate.setTargetAtTime(r, this.ctx.currentTime, 0.25);
   }
 
   setMuted(m) {

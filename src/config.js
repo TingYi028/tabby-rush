@@ -36,9 +36,16 @@ export const ROLL_H = 0.85;
 export const STEP_UP = 0.6;
 
 // Pace
-export const BASE_SPEED = 17;
-export const MAX_SPEED = 33;
-export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14 };
+export const BASE_SPEED = 18.5;
+export const MAX_SPEED = 37;
+export const SPEED_RAMP = 1900;     // distance over which speed approaches MAX_SPEED
+export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14, jetpack: 7.5 };
+
+// Thrills
+export const JET_Y = 10.4;          // jetpack cruise height (above the gantries)
+export const PAD_JUMP_H = 5.2;      // spring pad launch height (clears train roofs)
+export const FEVER_TIME = 6.5;      // TABBY RUSH frenzy duration
+export const FEVER_SPEED = 1.3;
 
 export const rand = (a, b) => a + Math.random() * (b - a);
 export const randi = (a, b) => Math.floor(rand(a, b + 1));

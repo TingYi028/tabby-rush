@@ -240,6 +240,79 @@ export class Overhead {
   }
 }
 
+/* ---------- spring pad ---------- */
+
+let padGeo;
+function buildPad() {
+  const P = PROP_UV;
+  const top = new THREE.CylinderGeometry(0.98, 0.98, 0.1, 28);
+  remapUV(top, P.STRIPE_YB);
+  top.translate(0, 0.42, 0);
+  const parts = [top, solidUV(new THREE.CylinderGeometry(1.05, 1.12, 0.16, 28).translate(0, 0.08, 0), P.DARK)];
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    parts.push(solidUV(new THREE.CylinderGeometry(0.13, 0.13, 0.22, 10).translate(Math.cos(a) * 0.6, 0.27, Math.sin(a) * 0.6), P.METAL));
+  }
+  parts.push(solidUV(new THREE.ConeGeometry(0.28, 0.22, 3).rotateX(-Math.PI / 2).translate(0, 0.52, -0.1), P.RED));
+  padGeo = mergeGeometries(parts, false);
+}
+
+export class JumpPad {
+  constructor(mats) {
+    if (!padGeo) buildPad();
+    this.group = new THREE.Group();
+    const m = new THREE.Mesh(padGeo, mats.props);
+    m.castShadow = m.receiveShadow = true;
+    this.glow = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: mats.glowTex, color: 0xffd23f, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.6,
+    }));
+    this.glow.scale.set(3, 1.4, 1);
+    this.glow.position.y = 0.6;
+    this.group.add(m, this.glow);
+  }
+}
+
+/* ---------- security drone (chases the hero after a stumble) ---------- */
+
+export class Drone {
+  constructor(mats) {
+    const P = PROP_UV;
+    const parts = [solidUV(new THREE.SphereGeometry(0.42, 20, 14).scale(1, 0.7, 1), P.WHITE)];
+    parts.push(solidUV(new THREE.SphereGeometry(0.3, 16, 10).scale(1, 0.6, 0.7).translate(0, -0.05, 0.28), P.DARK));
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i * Math.PI) / 2;
+      parts.push(solidUV(new THREE.BoxGeometry(0.75, 0.07, 0.1).rotateY(-a).translate(Math.cos(a) * 0.45, 0.05, Math.sin(a) * 0.45), P.DARK));
+    }
+    this.group = new THREE.Group();
+    const body = new THREE.Mesh(mergeGeometries(parts, false), mats.props);
+    body.castShadow = true;
+    this.group.add(body);
+    const rotorMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false });
+    this.rotors = [];
+    for (let i = 0; i < 4; i++) {
+      const a = Math.PI / 4 + (i * Math.PI) / 2;
+      const r = new THREE.Mesh(new THREE.CircleGeometry(0.34, 16).rotateX(-Math.PI / 2), rotorMat);
+      r.position.set(Math.cos(a) * 0.82, 0.12, Math.sin(a) * 0.82);
+      this.group.add(r);
+      this.rotors.push(r);
+    }
+    this.red = new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 0.4, 0.3) });
+    this.blue = new THREE.MeshBasicMaterial({ color: new THREE.Color(0.3, 0.8, 5) });
+    const lr = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), this.red);
+    const lb = new THREE.Mesh(new THREE.SphereGeometry(0.1, 10, 8), this.blue);
+    lr.position.set(-0.22, 0.3, 0.05);
+    lb.position.set(0.22, 0.3, 0.05);
+    this.group.add(lr, lb);
+    this.group.visible = false;
+  }
+  update(t) {
+    const on = Math.floor(t * 8) % 2 === 0;
+    this.red.color.setRGB(on ? 6 : 0.6, on ? 0.5 : 0.1, on ? 0.4 : 0.1);
+    this.blue.color.setRGB(on ? 0.1 : 0.3, on ? 0.2 : 0.9, on ? 0.6 : 6);
+    for (const r of this.rotors) r.rotation.y = t * 40;
+  }
+}
+
 /* ---------- coins (instanced: two draw calls for every coin on screen) ---------- */
 
 export class Coins {
@@ -320,8 +393,8 @@ export class Coins {
 
 /* ---------- power-ups ---------- */
 
-export const POWER_TYPES = ['magnet', 'sneakers', 'x2', 'shield'];
-const POWER_GLOW = { magnet: 0xff6a5a, sneakers: 0x8cff5a, x2: 0xffd23f, shield: 0x7fd8ff };
+export const POWER_TYPES = ['magnet', 'sneakers', 'x2', 'shield', 'jetpack'];
+const POWER_GLOW = { magnet: 0xff6a5a, sneakers: 0x8cff5a, x2: 0xffd23f, shield: 0x7fd8ff, jetpack: 0xffa040 };
 
 export class PowerUp {
   constructor(mats) {

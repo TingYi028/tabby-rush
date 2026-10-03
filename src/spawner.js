@@ -1,8 +1,8 @@
 import * as C from './config.js';
-import { Train, Ramp, Hurdle, Overhead, PowerUp } from './objects.js';
+import { Train, Ramp, Hurdle, Overhead, PowerUp, JumpPad } from './objects.js';
 
-const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp };
-const POWER_WEIGHTS = [['magnet', 0.3], ['sneakers', 0.25], ['x2', 0.25], ['shield', 0.2]];
+const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad };
+const POWER_WEIGHTS = [['magnet', 0.24], ['sneakers', 0.18], ['x2', 0.2], ['shield', 0.16], ['jetpack', 0.22]];
 
 function weightedPower() {
   let r = Math.random();
@@ -20,7 +20,7 @@ export class Spawner {
     this.root = root;
     this.mats = mats;
     this.coins = coins;
-    this.pools = { train: [], ramp: [], hurdle: [], overhead: [], power: [] };
+    this.pools = { train: [], ramp: [], hurdle: [], overhead: [], power: [], pad: [] };
     this.obstacles = [];
     this.powerups = [];
     this.reset(false);
@@ -84,8 +84,8 @@ export class Spawner {
       if (o.moving) {
         o.s0 -= o.speed * dt;
         o.obj.group.position.z = -o.s0;
-        if (!o.honked && o.s0 - dist < 95) { o.honked = true; events.push('horn'); }
-        if (!o.passed && o.s0 + o.len < dist + 2 && o.s0 < dist) { o.passed = true; events.push('pass'); }
+        if (!o.honked && o.s0 - dist < 95) { o.honked = true; events.push({ type: 'horn', lane: o.lane }); }
+        if (!o.passed && o.s0 < dist) { o.passed = true; events.push({ type: 'pass', lane: o.lane }); }
       }
       if (o.s0 + o.len < dist - 16) {
         this.release(o.kind, o.obj);
@@ -101,6 +101,16 @@ export class Spawner {
       }
     }
     return events;
+  }
+
+  /** Zig-zag coin trail in the sky for the jetpack. */
+  addSkyCoins(from, to) {
+    let lane = 1, s = from;
+    while (s < to) {
+      for (let i = 0; i < 7 && s < to; i++, s += 2.6) this.coins.add(C.laneX(lane), C.JET_Y + 1, s);
+      lane = lane === 1 ? C.pick([0, 2]) : 1;
+      s += 3;
+    }
   }
 
   removePower(p) {
@@ -127,7 +137,7 @@ export class Spawner {
 
     const prevSafe = this.safe;
     // An oncoming train needs a clear lane next to an unchanging safe lane for the rows it sweeps through.
-    if (!this.reserve && s0 > 480 && k - this.lastMoving > 7 && Math.random() < 0.2 + 0.15 * diff) {
+    if (!this.reserve && s0 > 360 && k - this.lastMoving > 6 && Math.random() < 0.28 + 0.2 * diff) {
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k);
       if (cand.length) this.reserve = { lane: C.pick(cand), until: k + 6 };
     }
@@ -154,10 +164,12 @@ export class Spawner {
         continue;
       }
       const r = Math.random();
-      if (r < 0.3 + 0.28 * diff) {
+      if (r < 0.34 + 0.3 * diff) {
         content[L] = Math.random() < 0.38 ? 'rampTrain' : 'train';
-      } else if (r < 0.48 + 0.25 * diff) {
+      } else if (r < 0.52 + 0.25 * diff) {
         content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+      } else if (k > 3 && Math.random() < 0.3) {
+        content[L] = 'pad';
       }
     }
     for (let L = 0; L < 3; L++) if (content[L] === 'train' || content[L] === 'moving') blocked[L] = true;
@@ -227,6 +239,11 @@ export class Spawner {
         this.busy[L] = k + Math.ceil((front + len - s0) / C.SLOT);
         return { ramp: rs, front, len };
       }
+      case 'pad': {
+        const obj = this.get('pad');
+        this.addObstacle('pad', obj, L, s0 + 6, 1.4);
+        return { at: s0 + 6 };
+      }
       case 'hurdle':
       case 'overhead': {
         const obj = this.get(content);
@@ -245,6 +262,10 @@ export class Spawner {
       const inf = info[L];
       if (content[L] === 'train' && !inf.moving && Math.random() < 0.3) {
         for (let s = inf.front + 1.5; s < inf.front + inf.len - 1; s += 2.4) co.add(C.laneX(L), C.TRAIN_TOP + 0.9, s);
+      }
+      if (content[L] === 'pad') {
+        // a high arc of coins that only a spring launch can reach
+        for (let i = 1; i <= 8; i++) co.add(C.laneX(L), 1.2 + 4.8 * Math.sin((i / 9) * Math.PI), inf.at + i * 3.2);
       }
     }
     if (k < 1 || Math.random() > 0.82) return;

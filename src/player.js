@@ -70,6 +70,15 @@ export class Player {
     }));
     this.bubble.renderOrder = 6;
     scene.add(this.bubble);
+
+    // Jetpack strapped to the hero's back (faces the chase camera).
+    this.jetpack = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: images.icon_jetpack ? makeTexture(images.icon_jetpack) : null, transparent: true, depthWrite: false,
+    }));
+    this.jetpack.scale.set(0.85, 0.85, 1);
+    this.jetpack.renderOrder = 5;
+    this.jetpack.visible = false;
+    scene.add(this.jetpack);
     this.reset();
   }
 
@@ -117,12 +126,19 @@ export class Player {
     this.stumbleT = Math.max(0, this.stumbleT - dt);
     this.coyote = this.onGround ? 0.09 : Math.max(0, this.coyote - dt);
 
+    const flying = w.jetpack;
     if (!this.crashed) {
       for (const a of this.queue) {
-        if (a === 'left' && this.lane > 0) {
-          this.prevLane = this.lane; this.lane--; this.leanT = 0.2; this.leanDir = -1; ev.push({ type: 'lane' });
-        } else if (a === 'right' && this.lane < 2) {
-          this.prevLane = this.lane; this.lane++; this.leanT = 0.2; this.leanDir = 1; ev.push({ type: 'lane' });
+        if ((a === 'left' && this.lane > 0) || (a === 'right' && this.lane < 2)) {
+          const close = this.closeCall(w);
+          this.prevLane = this.lane;
+          this.lane += a === 'left' ? -1 : 1;
+          this.leanT = 0.2;
+          this.leanDir = a === 'left' ? -1 : 1;
+          ev.push({ type: 'lane' });
+          if (close) ev.push({ type: 'nearmiss', obstacle: close });
+        } else if (flying) {
+          // no jumping or rolling while the jetpack is lit
         } else if (a === 'jump' && (this.onGround || this.coyote > 0)) {
           const h = sneakers ? C.JUMP_H_SNEAKERS : C.JUMP_H;
           this.vy = Math.sqrt(2 * C.GRAVITY * h);
@@ -149,10 +165,29 @@ export class Player {
     // vertical
     const s = w.dist;
     const g = w.spawner.groundAt(this.x, s, this.y);
-    if (this.onGround) {
+    if (flying) {
+      this.onGround = false;
+      this.rollT = 0;
+      const k = 1 - Math.exp(-3.2 * dt);
+      const ny = this.y + (C.JET_Y - this.y) * k;
+      this.vy = (ny - this.y) / Math.max(dt, 1e-4);
+      this.y = ny;
+    } else if (this.onGround) {
       if (g < this.y - 0.05) { this.onGround = false; this.vy = 0; } else this.y = g;
+      // spring pads launch the hero high enough to land on train roofs
+      for (const o of w.spawner.obstacles) {
+        if (o.type !== 'pad' || this.y > 0.5 || Math.abs(this.x - o.x) > 1.0) continue;
+        if (s >= o.s0 - 0.6 && s <= o.s0 + o.len) {
+          this.vy = Math.sqrt(2 * C.GRAVITY * C.PAD_JUMP_H);
+          this.onGround = false;
+          this.rollT = 0;
+          this.sx = 0.8; this.sy = 1.25;
+          ev.push({ type: 'pad' });
+          break;
+        }
+      }
     }
-    if (!this.onGround) {
+    if (!this.onGround && !flying) {
       this.vy -= C.GRAVITY * (this.vy < 0 ? 1.12 : 1) * dt;
       this.y += this.vy * dt;
       if (this.y <= g) {
@@ -167,10 +202,10 @@ export class Player {
     this.ground = w.spawner.groundAt(this.x, s, this.y + 0.01);
 
     // collisions
-    if (!this.crashed) {
+    if (!this.crashed && !flying) {
       const top = this.y + this.height;
       for (const o of w.spawner.obstacles) {
-        if (o.type === 'ramp') continue;
+        if (o.type === 'ramp' || o.type === 'pad') continue;
         const near = o.s0 - 0.35, far = o.s0 + o.len + 0.35;
         if (s < near || this.prevS > far) continue;
         const half = o.type === 'train' ? 1.15 + 0.3 : 1.1 + 0.28;
@@ -180,6 +215,7 @@ export class Player {
         else if (o.type === 'hurdle') hit = this.y < C.HURDLE_TOP - 0.14;
         else if (o.type === 'overhead') hit = top > C.OVERHEAD_BOTTOM + 0.05;
         if (!hit) continue;
+        if (w.invincible) { ev.push({ type: 'smash', obstacle: o }); continue; }
         const side = o.type === 'train' && Math.abs(prevX - o.x) >= half && this.lane !== this.prevLane;
         if (side) {
           // bounced off the side of a train: back to the previous lane, stumble
@@ -208,6 +244,7 @@ export class Player {
     let map, map2 = null, blend = 0, mirror = false, crashGeo = false;
     if (this.crashed) { map = this.frames.crash; crashGeo = true; }
     else if (this.rollT > 0) map = this.frames.roll[Math.floor(this.runPhase * 0.9) % 2];
+    else if (flying) map = this.frames.jump[1];
     else if (!this.onGround) map = this.frames.jump[this.vy > 7 ? 0 : this.vy > -5 ? 1 : 2];
     else if (this.leanT > 0) { map = this.frames.lean; mirror = this.leanDir < 0; }
     else {
@@ -235,6 +272,9 @@ export class Player {
     this.shadow.scale.set(k, 1, k);
     this.shadow.material.opacity = 0.9 * k;
 
+    this.jetpack.visible = !!flying && !this.crashed;
+    if (flying) this.jetpack.position.set(this.x, this.y + 0.95 + Math.sin(this.runPhase) * 0.04, 0.25);
+
     const shield = w.power.shield;
     this.bubble.visible = shield && !this.crashed;
     if (shield) {
@@ -243,6 +283,21 @@ export class Player {
       this.bubble.scale.set(2.6 + Math.sin(t * 6) * 0.06, 2.6 + Math.cos(t * 5) * 0.06, 1);
     }
     return ev;
+  }
+
+  /** A train front bearing down in the current lane, close enough that leaving now is a near miss. */
+  closeCall(w) {
+    if (this.y >= C.TRAIN_TOP - C.STEP_UP || w.jetpack) return null;
+    const s = w.dist;
+    for (const o of w.spawner.obstacles) {
+      if (o.type !== 'train' || o.lane !== this.lane) continue;
+      const ahead = o.s0 - s;
+      const reach = o.moving ? 16 : 8.5;
+      if (ahead < 0.4 || ahead > reach) continue;
+      const ramp = w.spawner.obstacles.some((q) => q.type === 'ramp' && q.lane === o.lane && Math.abs(q.s0 + q.len - o.s0) < 0.1);
+      if (!ramp) return o;
+    }
+    return null;
   }
 
   faceCamera(camera) {

@@ -120,6 +120,29 @@
   kbd { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; background: var(--cream);
     color: var(--ink); border: 2px solid var(--ink); border-radius: 8px; box-shadow: 0 3px 0 var(--ink);
     font: 16px/1 var(--font-display); text-shadow: none; }
+  #rush { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+  #rush img { width: 36px; height: 36px; filter: drop-shadow(0 3px 0 rgba(59, 29, 14, 0.5)); }
+  .rush-track { width: clamp(96px, 16vw, 150px); height: 16px; border: 3px solid var(--ink); border-radius: 999px;
+    background: rgba(255, 245, 223, 0.9); overflow: hidden; }
+  #rush-fill { display: block; height: 100%; transform-origin: left center; transform: scaleX(0);
+    background: linear-gradient(90deg, #ffb52e, #ff5a8a, #b45cff); transition: transform 0.15s; }
+  #rush.full img { animation: bump 0.5s ease-out infinite alternate; }
+  #rush.active #rush-fill { background: linear-gradient(90deg, #ff5a5a, #ffd23f, #5cf0a0, #5ab4ff, #c45cff);
+    background-size: 200% 100%; animation: rainbow 0.6s linear infinite; }
+  @keyframes rainbow { to { background-position: -200% 0; } }
+  #popups { position: absolute; left: 50%; bottom: 34%; transform: translateX(-50%); display: grid; justify-items: center;
+    gap: 2px; pointer-events: none; }
+  .popup { font: 900 clamp(20px, 3.6vw, 30px)/1.1 var(--font-cjk); color: var(--white); text-shadow: var(--ol); white-space: nowrap;
+    animation: pop-up 1.2s cubic-bezier(0.2, 0.9, 0.3, 1.2) forwards; }
+  .popup.tone-sun { color: #ffe36b; }
+  .popup.tone-hot { color: #ff9ad0; }
+  .popup.tone-cool { color: #9fe6ff; }
+  @keyframes pop-up { 0% { opacity: 0; transform: translateY(20px) scale(0.6); } 15% { opacity: 1; transform: scale(1.15); }
+    30% { transform: scale(1); } 75% { opacity: 1; } 100% { opacity: 0; transform: translateY(-40px); } }
+  #fever-frame { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity 0.3s;
+    box-shadow: inset 0 0 60px 18px rgba(255, 90, 170, 0.55), inset 0 0 140px 30px rgba(255, 210, 63, 0.35); }
+  #fever-frame.on { opacity: 1; animation: fever-pulse 0.45s ease-in-out infinite alternate; }
+  @keyframes fever-pulse { to { box-shadow: inset 0 0 80px 26px rgba(120, 140, 255, 0.6), inset 0 0 160px 40px rgba(255, 90, 170, 0.35); } }
   .sound-hint { order: 6; opacity: 0.9; animation: pulse 1.6s ease-in-out infinite; }
   .corner { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 16px); right: 16px; }
 
@@ -182,6 +205,10 @@
         <span class="score-label">SCORE</span>
         <span id="score">0</span>
         <span id="mult">×1</span>
+        <div id="rush" aria-label="TABBY RUSH 能量">
+          <img src="assets/ui/icon_rush.webp" alt="">
+          <span class="rush-track"><i id="rush-fill"></i></span>
+        </div>
       </div>
       <div class="hud-right">
         <div class="coin-row">
@@ -202,6 +229,8 @@
     </div>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
+  <div id="popups" aria-hidden="true"></div>
+  <div id="fever-frame" aria-hidden="true"></div>
 
   <section id="loading" class="screen">
     <div class="load-title">TABBY RUSH</div>

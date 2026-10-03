@@ -8,12 +8,12 @@ import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import * as C from './config.js';
 import { loadImages, setAniso } from './assets.js';
 import { World } from './world.js';
-import { buildSharedMaterials, Coins, blinkLights } from './objects.js';
+import { buildSharedMaterials, Coins, Drone, blinkLights } from './objects.js';
 import { Spawner } from './spawner.js';
 import { Player } from './player.js';
 import { FX, FX_COLORS } from './fx.js';
 import { AudioFX, store } from './audio.js';
-import { UI, POWER_META } from './ui.js';
+import { UI, POWER_META, RUSH_ICON } from './ui.js';
 
 /* ---------- renderer & post ---------- */
 
@@ -74,11 +74,17 @@ composer.addPass(finalPass);
 
 const G = {
   state: 'loading', dist: 0, speed: C.BASE_SPEED, score: 0, coins: 0, time: 0, timeScale: 1,
-  power: { magnet: 0, sneakers: 0, x2: 0, shield: false },
+  power: { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 },
   best: store.get('best', 0), bank: store.get('bank', 0),
   deathT: 0, flash: 0, camBlend: 1, dustT: 0, sparkT: 0,
+  rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, smashPopT: 0,
 };
-let world, coins, spawner, player, fx;
+let world, coins, spawner, player, fx, drone;
+const feverFrame = document.getElementById('fever-frame');
+const FLAME_A = new THREE.Color(1.3, 0.75, 0.2);
+const FLAME_B = new THREE.Color(1.1, 0.35, 0.12);
+const RAINBOW = ['#ff6b6b', '#ffd23f', '#6bf0a0', '#6bb4ff'].map((c) => new THREE.Color(c).multiplyScalar(1.2));
+const fmtN = (n) => Math.round(n).toLocaleString('en-US');
 const audio = new AudioFX();
 const ui = new UI({
   play: () => startRun(),
@@ -91,10 +97,11 @@ ui.setMuted(audio.muted);
 ui.stats(G.best, G.bank);
 
 const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650));
+const totalMult = () => multiplier() * (G.power.x2 > 0 ? 2 : 1) * (G.fever > 0 ? 3 : 1);
 
 /* ---------- camera rig ---------- */
 
-const rig = { x: 0, y: 4.6, fov: 58, roll: 0, trauma: 0 };
+const rig = { x: 0, y: 4.6, fov: 58, roll: 0, trauma: 0, jet: 0 };
 const look = new THREE.Vector3();
 const lookMenu = new THREE.Vector3();
 const posMenu = new THREE.Vector3();
@@ -110,14 +117,19 @@ function updateCamera(dt, raw) {
   const baseY = portrait ? 4.8 : 4.25;
   const px = player.x, g = player.ground, air = Math.max(0, player.y - g);
   rig.x = C.damp(rig.x, px * 0.8, 6.5, dt);
-  rig.y = C.damp(rig.y, Math.min(7.6, baseY + g * 0.8 + air * 0.28), 5, dt);
+  // Jetpack: lift the whole rig up into the sky lane.
+  const jetOn = G.power.jetpack > 0 || (!player.onGround && player.y > 7.5);
+  rig.jet = C.damp(rig.jet, jetOn ? 1 : 0, 2.2, dt);
+  const yNormal = Math.min(7.6, baseY + g * 0.8 + air * 0.28);
+  rig.y = C.damp(rig.y, yNormal + (C.JET_Y + 2.9 - yNormal) * rig.jet, 5, dt);
   rig.trauma = Math.max(0, rig.trauma - raw * 1.5);
   const t = performance.now() / 1000, sh = rig.trauma * rig.trauma;
   const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.3 : 1;
   const sx = sh * 0.55 * reduce * (Math.sin(t * 41) + Math.sin(t * 23.7 + 1.3)) * 0.5;
   const sy = sh * 0.45 * reduce * (Math.sin(t * 37 + 2) + Math.sin(t * 29.1)) * 0.5;
   posGame.set(rig.x + sx, rig.y + sy, camZ);
-  look.set(px * 0.55, 1.25 + g * 0.85 + air * 0.2, -14);
+  const lookNormal = 1.25 + g * 0.85 + air * 0.2;
+  look.set(px * 0.55, lookNormal + (C.JET_Y - 0.8 - lookNormal) * rig.jet, -14);
 
   const mt = t * 0.22;
   posMenu.set(Math.sin(mt) * 1.6, 5.4, 10.5);
@@ -132,7 +144,7 @@ function updateCamera(dt, raw) {
 
   const base = portrait ? Math.min(78, Math.max(62, portraitFov(aspect, camZ))) : 58;
   const air2 = !player.onGround && G.power.sneakers > 0 ? 7 : 0;
-  const target = base + (G.state === 'play' ? (G.speed - C.BASE_SPEED) * 0.45 + air2 : 0);
+  const target = base + (G.state === 'play' ? (G.speed - C.BASE_SPEED) * 0.4 + air2 + (G.fever > 0 ? 9 : 0) + rig.jet * 4 : 0);
   rig.fov = C.damp(rig.fov, target, 3, dt);
   if (Math.abs(camera.fov - rig.fov) > 0.01) { camera.fov = rig.fov; camera.updateProjectionMatrix(); }
 }
@@ -183,8 +195,14 @@ function startRun() {
   audio.unlock();
   audio.play('go', { vol: 0.7 });
   audio.music('game');
-  Object.assign(G, { state: 'play', dist: 0, score: 0, coins: 0, time: 0, timeScale: 1, deathT: 0, speed: C.BASE_SPEED });
-  G.power = { magnet: 0, sneakers: 0, x2: 0, shield: false };
+  Object.assign(G, {
+    state: 'play', dist: 0, score: 0, coins: 0, time: 0, timeScale: 1, deathT: 0, speed: C.BASE_SPEED,
+    rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0,
+  });
+  G.power = { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 };
+  feverFrame.classList.remove('on');
+  audio.setRate(1);
+  drone.group.visible = false;
   G.camBlend = 0;
   worldRoot.position.z = 0;
   spawner.reset(true);
@@ -218,6 +236,10 @@ function toMenu() {
   G.state = 'menu';
   G.camBlend = 0;
   G.timeScale = 1;
+  G.fever = 0;
+  G.power.jetpack = 0;
+  feverFrame.classList.remove('on');
+  drone.group.visible = false;
   spawner.reset(false);
   player.reset();
   fx.clear();
@@ -231,9 +253,54 @@ function grantPower(type) {
   else G.power[type] = C.POWER_TIME[type];
   audio.play('powerup', { vol: 0.8 });
   ui.toast(`${POWER_META[type].label}！`, POWER_META[type].icon);
-  const col = { magnet: FX_COLORS.red, sneakers: FX_COLORS.green, x2: FX_COLORS.yellow, shield: FX_COLORS.blue }[type];
+  const col = { magnet: FX_COLORS.red, sneakers: FX_COLORS.green, x2: FX_COLORS.yellow, shield: FX_COLORS.blue, jetpack: FX_COLORS.yellow }[type];
   fx.burst(player.x, player.y + 1, -G.dist, col, 34, 8);
-  flash({ magnet: '#ffb3a8', sneakers: '#c8ffb0', x2: '#fff0a0', shield: '#c9f1ff' }[type], 0.28);
+  flash({ magnet: '#ffb3a8', sneakers: '#c8ffb0', x2: '#fff0a0', shield: '#c9f1ff', jetpack: '#ffd59a' }[type], 0.28);
+  if (type === 'jetpack') {
+    audio.play('jetpack', { vol: 0.9 });
+    spawner.addSkyCoins(G.dist + 16, G.dist + 16 + runSpeed() * (C.POWER_TIME.jetpack - 1.5));
+  }
+}
+
+function runSpeed() { return G.speed * (G.fever > 0 ? C.FEVER_SPEED : 1); }
+
+function addRush(v) {
+  if (G.fever > 0 || G.state !== 'play') return;
+  G.rush = Math.min(1, G.rush + v);
+  if (G.rush >= 1) startFever();
+}
+
+function startFever() {
+  G.fever = C.FEVER_TIME;
+  G.power.magnet = Math.max(G.power.magnet, C.FEVER_TIME);
+  audio.play('rush', { vol: 1 });
+  audio.setRate(1.08);
+  ui.toast('TABBY RUSH！', RUSH_ICON);
+  flash('#ffe36b', 0.5);
+  rig.trauma = Math.max(rig.trauma, 0.45);
+  feverFrame.classList.add('on');
+  fx.burst(player.x, player.y + 1.2, -G.dist - 1.5, FX_COLORS.yellow, 24, 13);
+}
+
+function endFever() {
+  G.fever = 0;
+  G.rush = 0;
+  audio.setRate(1);
+  feverFrame.classList.remove('on');
+  player.invuln = Math.max(player.invuln, 1.2);
+}
+
+function nearMiss(label) {
+  G.combo = G.comboT > 0 ? G.combo + 1 : 1;
+  G.comboT = 3;
+  const bonus = 150 * G.combo * totalMult();
+  G.score += bonus;
+  addRush(0.14);
+  audio.play('nearmiss', { vol: 0.85, rate: 1 + Math.min(G.combo, 6) * 0.05 });
+  ui.popup(`${label} +${fmtN(bonus)}${G.combo > 1 ? `　${G.combo} 連擊！` : ''}`, G.combo > 1 ? 'hot' : 'sun');
+  G.slowmo = 0.14;
+  flash('#ffffff', 0.12);
+  rig.trauma = Math.max(rig.trauma, 0.2);
 }
 
 function crash(o) {
@@ -288,11 +355,29 @@ function handlePlayerEvents(ev) {
         break;
       case 'stumble':
         audio.play('stumble', { vol: 0.8 });
+        audio.play('drone', { vol: 0.7 });
         rig.trauma = Math.max(rig.trauma, 0.45);
         flash('#ff8a6a', 0.22);
-        ui.toast('小心！', null, 'warn');
+        ui.toast('被無人機盯上了！', null, 'warn');
+        G.combo = 0;
         break;
       case 'crash': crash(e.obstacle); break;
+      case 'nearmiss': nearMiss('驚險閃過！'); break;
+      case 'pad':
+        audio.play('boing', { vol: 0.8 });
+        fx.burst(player.x, 0.5, -G.dist, FX_COLORS.yellow, 22, 6);
+        rig.trauma = Math.max(rig.trauma, 0.15);
+        break;
+      case 'smash': {
+        spawner.smash(e.obstacle);
+        const bonus = 100 * totalMult();
+        G.score += bonus;
+        audio.play('smash', { vol: 0.85, rate: C.rand(0.95, 1.1) });
+        fx.burst(e.obstacle.x, player.y + 1.4, -G.dist - 2.5, FX_COLORS.yellow, 14, 9);
+        rig.trauma = Math.max(rig.trauma, 0.3);
+        if (G.smashPopT <= 0) { ui.popup(`粉碎！+${fmtN(bonus)}`, 'hot'); G.smashPopT = 0.35; }
+        break;
+      }
       default: break;
     }
   }
@@ -311,6 +396,34 @@ function emitAmbient(dt) {
     if (G.power.sneakers > 0 && !player.onGround) fx.trail(player.x, player.y, -G.dist + 0.2, FX_COLORS.green);
     if (G.power.x2 > 0) fx.trail(player.x + C.rand(-0.5, 0.5), player.y + 2.1, -G.dist, FX_COLORS.yellow);
   }
+  if (G.power.jetpack > 0) {
+    // twin thruster flames, small so the hero stays readable
+    for (const ox of [-0.28, 0.28]) {
+      fx.add.emit(player.x + ox, player.y + 0.55, -G.dist + 0.35, C.rand(-0.3, 0.3), C.rand(-7, -5), C.rand(0.5, 1.5),
+        C.rand(0.12, 0.2), C.rand(0.3, 0.45), 0.05, Math.random() < 0.5 ? FLAME_A : FLAME_B, 0.85, 0, 2);
+    }
+  }
+  G.feverT = (G.feverT || 0) - dt;
+  if (G.fever > 0 && G.feverT <= 0) {
+    // rainbow sparks streaming off both sides, never over the hero's body
+    G.feverT = 0.035;
+    const side = Math.random() < 0.5 ? -1 : 1;
+    fx.add.emit(player.x + side * C.rand(0.75, 1.1), player.y + C.rand(0.3, 1.8), -G.dist - 0.3, side * C.rand(0.5, 1.5),
+      C.rand(-0.3, 0.6), C.rand(4, 7), C.rand(0.25, 0.4), C.rand(0.3, 0.5), 0.05, RAINBOW[(Math.random() * 4) | 0], 0.75, 0, 1);
+  }
+}
+
+function updateDrone(dt, t) {
+  const on = (G.state === 'play' || G.state === 'dying' || G.state === 'over') && player.stumbleT > 0;
+  if (on && !drone.group.visible) { drone.group.visible = true; drone.group.position.set(player.x, player.y + 5, 4); }
+  if (!on) { drone.group.visible = false; return; }
+  const p = drone.group.position;
+  const side = player.x > 0.1 ? -1 : 1;
+  p.x = C.damp(p.x, player.x + side * 1.1 + Math.sin(t * 2.3) * 0.3, 5, dt);
+  p.y = C.damp(p.y, player.y + 3.1 + Math.sin(t * 4) * 0.15, 4, dt);
+  p.z = C.damp(p.z, 0.6, 3, dt);
+  drone.group.rotation.set(0.25, Math.sin(t * 1.7) * 0.3, (p.x - player.x) * -0.4);
+  drone.update(t);
 }
 
 function updatePowerups(dt) {
@@ -333,38 +446,57 @@ function stepWorld(dt, speed) {
   worldRoot.position.z = G.dist;
   const sev = spawner.update(dt, G.dist);
   for (const e of sev) {
-    if (e === 'horn') audio.play('train_horn', { vol: 0.5 });
-    else if (e === 'pass') audio.play('train_pass', { vol: 0.45 });
+    if (e.type === 'horn') audio.play('train_horn', { vol: 0.5 });
+    else if (e.type === 'pass') {
+      audio.play('train_pass', { vol: 0.45 });
+      // an oncoming train screaming past in the next lane counts as a near miss
+      if (G.state === 'play' && Math.abs(e.lane - player.lane) === 1 && player.y < C.TRAIN_TOP && G.power.jetpack <= 0) nearMiss('呼嘯而過！');
+    }
   }
 }
 
 function updatePlay(dt) {
   G.time += dt;
-  G.speed = C.BASE_SPEED + (C.MAX_SPEED - C.BASE_SPEED) * (1 - Math.exp(-G.dist / 2600));
-  stepWorld(dt, G.speed);
-  handlePlayerEvents(player.update(dt, { dist: G.dist, speed: G.speed, spawner, power: G.power }));
+  G.speed = C.BASE_SPEED + (C.MAX_SPEED - C.BASE_SPEED) * (1 - Math.exp(-G.dist / C.SPEED_RAMP));
+  const v = runSpeed();
+  stepWorld(dt, v);
+  handlePlayerEvents(player.update(dt, {
+    dist: G.dist, speed: v, spawner, power: G.power, jetpack: G.power.jetpack > 0, invincible: G.fever > 0,
+  }));
   if (G.state !== 'play') return;
 
   const got = coins.update(dt, G.time, G.dist, player.x, player.y, G.power.magnet > 0);
   for (const c of got) {
     G.coins++;
-    G.score += 25 * multiplier() * (G.power.x2 > 0 ? 2 : 1);
+    G.score += 25 * totalMult();
     fx.coin(c.x, c.y, -c.s);
     audio.coin();
+    addRush(0.011);
   }
   if (got.length) ui.coinPop();
   updatePowerups(dt);
 
-  for (const k of ['magnet', 'sneakers', 'x2']) {
+  for (const k of ['magnet', 'sneakers', 'x2', 'jetpack']) {
     if (G.power[k] > 0) {
       G.power[k] = Math.max(0, G.power[k] - dt);
-      if (G.power[k] === 0) audio.play('ui_click', { vol: 0.4, rate: 0.8 });
+      if (G.power[k] === 0) {
+        audio.play('ui_click', { vol: 0.4, rate: 0.8 });
+        if (k === 'jetpack') player.invuln = Math.max(player.invuln, 1.5);
+      }
     }
   }
-  G.score += G.speed * dt * 0.5 * multiplier() * (G.power.x2 > 0 ? 2 : 1);
+  if (G.fever > 0) {
+    G.fever = Math.max(0, G.fever - dt);
+    G.rush = G.fever / C.FEVER_TIME;
+    if (G.fever === 0) endFever();
+  }
+  G.comboT = Math.max(0, G.comboT - dt);
+  G.smashPopT -= dt;
+  G.score += v * dt * 0.5 * totalMult();
   emitAmbient(dt);
-  ui.hud(Math.floor(G.score), G.coins, multiplier(), G.power.x2 > 0);
+  ui.hud(Math.floor(G.score), G.coins, totalMult(), G.power.x2 > 0 || G.fever > 0);
   ui.powers(G.power, C.POWER_TIME);
+  ui.rush(G.rush, G.fever > 0);
   G.camBlend = Math.min(1, G.camBlend + dt / 0.9);
 }
 
@@ -391,6 +523,10 @@ function frame(now) {
   const raw = Math.min(0.05, (now - last) / 1000);
   last = now;
   adapt(raw);
+  if (G.state === 'play') {
+    G.slowmo = Math.max(0, G.slowmo - raw);
+    G.timeScale = G.slowmo > 0 ? 0.5 : 1;
+  }
   const dt = raw * G.timeScale;
   if (G.state === 'play') updatePlay(dt);
   else if (G.state === 'menu') updateMenu(dt);
@@ -402,14 +538,16 @@ function frame(now) {
     world.update(dt, G.dist, camera);
     updateCamera(dt, raw);
     player.faceCamera(camera);
+    updateDrone(dt, now / 1000);
   }
   G.flash = Math.max(0, G.flash - raw * 2.2);
   const u = finalPass.uniforms;
   u.uFlash.value = G.flash;
   u.uTime.value = now / 1000;
   const fast = G.state === 'play' ? C.clamp((G.speed - 25) / 8, 0, 1) * 0.6 : 0;
-  const boost = G.state === 'play' && G.power.sneakers > 0 && !player.onGround ? 0.7 : 0;
-  u.uSpeed.value = C.damp(u.uSpeed.value, Math.max(fast, boost), 6, raw);
+  const boost = G.state === 'play' && ((G.power.sneakers > 0 && !player.onGround) || G.power.jetpack > 0) ? 0.7 : 0;
+  const frenzy = G.state === 'play' && G.fever > 0 ? 1 : 0;
+  u.uSpeed.value = C.damp(u.uSpeed.value, Math.max(fast, boost, frenzy), 6, raw);
   if (canvas.width > 1 && canvas.height > 1) composer.render();
 }
 
@@ -468,6 +606,8 @@ async function boot() {
   spawner = new Spawner(worldRoot, mats, coins);
   player = new Player(scene);
   fx = new FX(worldRoot);
+  drone = new Drone(mats);
+  scene.add(drone.group);
   resize();
 
   // Warm the pools and shader programs so the first obstacles don't hitch.
@@ -486,6 +626,7 @@ async function boot() {
   G.camBlend = 0;
   ui.show('menu');
   requestAnimationFrame(frame);
+  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss };
   const firstGesture = () => {
     if (audio.unlocked) return;
     audio.unlock();
