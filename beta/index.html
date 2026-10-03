@@ -295,12 +295,17 @@
   .revive-keys { display: flex; gap: 14px; justify-content: center; font: 900 14px/1 var(--font-cjk); }
   .revive-keys kbd { min-width: 0; height: 26px; margin-right: 4px; font-size: 14px; }
   @media (pointer: coarse) { .revive-keys { display: none; } }
+  @media (max-height: 440px) {  /* short landscape phones: 繼續 right under the title, the missions below it */
+    #pause .card > p { display: none; }
+    #pause .mis-panel { order: 1; }
+  }
   @media (max-height: 520px) {  /* landscape phones: smaller ring, buttons side by side */
     .revive-card { gap: 8px; padding-block: 12px 16px; }
     .revive-card h2 { font-size: 30px; }
     .revive-ring { width: 80px; height: 80px; }
     .revive-ring span { width: 54px; height: 54px; font-size: 36px; }
-    .revive-actions { grid-auto-flow: column; justify-content: center; align-items: center; }
+    .revive-actions { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 8px 12px; }
+    #btn-giveup { white-space: nowrap; }
     .btn-revive { font-size: 22px; padding: 11px 20px 13px; }
     #revive .btn-alt { font-size: 18px; padding: 10px 20px 12px; }
   }
@@ -460,6 +465,12 @@
     #menu #menu-logo { width: min(600px, 42vw, 46vh); }
     #menu-meta .mis-skip { min-width: 32px; height: 32px; }
   }
+  @media (min-width: 821px) and (max-width: 1250px) and (min-aspect-ratio: 1001/1000) and (max-height: 900px) {
+    /* tablets in landscape / small laptops (after the block above, so this cap wins): the logo stays clear of the gear and sound buttons, the chips keep one row */
+    #menu #menu-logo { width: min(600px, 34vw, 46vh); }
+    #menu .chips { gap: 8px; }
+    #menu .chip { padding: 6px 12px; }
+  }
   /* short screens: tighter game-over / pause cards so the missions fit without scrolling */
   #over, #pause, #revive { overflow-y: auto; align-items: safe center; }
   @media (max-height: 940px) {
@@ -518,6 +529,9 @@
     .daily-meta { justify-content: center; }
     .chips { order: 4; justify-content: center; }
     .keys { order: 5; justify-content: center; text-align: center; }
+  }
+  @media (max-width: 820px) and (max-height: 700px), (max-aspect-ratio: 1/1) and (max-height: 700px) {
+    #menu { gap: 8px; padding-top: calc(env(safe-area-inset-top, 0px) + 70px); }
   }
   @media (prefers-reduced-motion: reduce) {
     .menu-hero, .btn-play, #go-ribbon { animation: none; }
@@ -637,6 +651,7 @@
     background: var(--white); color: var(--ink); font: 900 16px/1 var(--font-cjk); user-select: text; -webkit-user-select: text; }
   .board-me input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
   .board-body { width: 100%; min-height: 0; display: grid; overflow-y: auto; overscroll-behavior: contain; }
+  .board-body:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; border-radius: 10px; }
   .board-list { list-style: none; margin: 0; padding: 2px 4px 6px; display: grid; gap: 6px; align-content: start; }
   .board-row { display: grid; grid-template-columns: 32px minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 6px 10px;
     background: var(--white); border: 2px solid var(--ink); border-radius: 12px; text-align: left; }
@@ -971,7 +986,7 @@
       </div>
       <p class="board-sub" id="board-sub"></p>
       <label class="board-me"><span>我的名字</span><input type="text" id="board-name" maxlength="12" autocomplete="off" enterkeyhint="done" spellcheck="false"></label>
-      <div class="board-body" role="tabpanel" aria-labelledby="board-title">
+      <div class="board-body" role="tabpanel" aria-labelledby="board-title" tabindex="0">
         <p class="board-status" id="board-status" role="status" aria-live="polite" hidden></p>
         <ol class="board-list" id="board-list"></ol>
       </div>

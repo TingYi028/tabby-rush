@@ -24,6 +24,11 @@ export class BoardUI {
     this.scopes = [...document.querySelectorAll('#board-scope button')];
     for (const b of this.scopes) b.addEventListener('click', () => { if (this.scope !== b.dataset.scope) { this.scope = b.dataset.scope; this.click(); this.render(); } });
     for (const b of this.tabs) b.addEventListener('click', () => { if (this.tab !== b.dataset.tab) { this.tab = b.dataset.tab; this.click(); this.render(); } });
+    // landscape phones stack the tabs (index.html): tell screen readers which arrow keys apply
+    const stacked = matchMedia('(max-height: 520px) and (min-width: 600px) and (min-aspect-ratio: 1001/1000)');
+    const orient = () => $('board-tabs').setAttribute('aria-orientation', stacked.matches ? 'vertical' : 'horizontal');
+    orient();
+    stacked.addEventListener?.('change', orient);
     // arrow keys move between tabs / scopes (only the selected one is in the Tab order); landscape stacks the tabs
     const arrows = (e) => (e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : e.key === 'ArrowLeft' || e.key === 'ArrowUp' ? -1 : 0);
     $('board-tabs').addEventListener('keydown', (e) => {

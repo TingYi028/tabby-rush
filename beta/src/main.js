@@ -127,6 +127,9 @@ const FLAME_A = new THREE.Color(1.3, 0.75, 0.2);
 const FLAME_B = new THREE.Color(1.1, 0.35, 0.12);
 const RAINBOW = ['#ff6b6b', '#ffd23f', '#6bf0a0', '#6bb4ff'].map((c) => new THREE.Color(c).multiplyScalar(1.2));
 const fmtN = (n) => Math.round(n).toLocaleString('en-US');
+// While the lost-GPU notice is up no key reaches the game or the cards behind it (their handlers listen in the
+// capture phase too, so this one is registered before them); the notice's own button still works.
+window.addEventListener('keydown', (e) => { if (!document.getElementById('gl-lost').hidden) e.stopImmediatePropagation(); }, true);
 const audio = new AudioFX();
 const ui = new UI({
   play: () => startRun(),
@@ -512,7 +515,8 @@ function showChallenge() {
 }
 const NEWS_ID = '2026-10-04';
 const NEWS_ALL = `${NEWS_ID}+world`;
-const newsSeen = () => { const v = store.get('news', ''); return v === NEWS_ALL || (v === NEWS_ID && !remote.on); };
+let newsDismissed = false; // this session (the world board may turn on right after a tap on a slow network)
+const newsSeen = () => { const v = store.get('news', ''); return newsDismissed || v === NEWS_ALL || (v === NEWS_ID && !remote.on); };
 window.addEventListener('hashchange', () => {
   const vs = parseChallenge();
   if (!vs) return;
@@ -520,6 +524,7 @@ window.addEventListener('hashchange', () => {
   if (G.state === 'menu') showChallenge();
 });
 $('news-chip').addEventListener('click', () => {
+  newsDismissed = true;
   store.set('news', remote.on ? NEWS_ALL : NEWS_ID);
   $('news-chip').hidden = true;
   boardUI.open('menu');
@@ -1225,11 +1230,12 @@ for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
 
 // Phones may take the GPU back (backgrounded tab, driver reset): pause, say so, and rebuild when it is returned.
 // While the notice is up nothing behind it takes input (a key could otherwise resume the frozen run).
-let glLost = false, bootFailed = false;
+let glLost = false, bootFailed = false, focusBeforeLost = null;
 const blockBehind = (on) => { for (const el of document.querySelectorAll('#app > *')) if (el.id !== 'gl-lost') el.inert = on; };
 canvas.addEventListener('webglcontextlost', (e) => {
   e.preventDefault(); // lets the browser hand the context back
   glLost = true;
+  focusBeforeLost = document.activeElement;
   if (G.state === 'play') pause();
   const inRun = G.state === 'pause' || G.state === 'dying' || G.state === 'revive';
   $('gl-lost-note').textContent = inRun ? '重新載入會結束這一局，之前存好的紀錄和金幣都還在。' : '存好的紀錄和金幣都還在。';
@@ -1245,7 +1251,15 @@ canvas.addEventListener('webglcontextrestored', () => {
   buildEnvironment();
   applyQuality(); // render targets and the shadow map are rebuilt at the current size
   idleFrames = 0;
-  if (G.state === 'pause') setTimeout(() => $('btn-resume').focus({ preventScroll: true }), 30);
+  const back = focusBeforeLost;
+  focusBeforeLost = null;
+  setTimeout(() => {
+    const shown = (el) => el && el.isConnected && el !== document.body && !el.disabled && el.getClientRects().length > 0;
+    const name = document.body.dataset.screen, screen = $(name);
+    const main = { pause: 'btn-resume', over: 'btn-retry', menu: 'btn-play', revive: $('btn-revive').disabled ? 'btn-giveup' : 'btn-revive' }[name];
+    const el = shown(back) && screen && screen.contains(back) ? back : main && $(main);
+    if (shown(el)) el.focus({ preventScroll: true });
+  }, 30);
 });
 $('btn-reload').addEventListener('click', () => location.reload());
 
