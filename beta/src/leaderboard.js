@@ -12,7 +12,8 @@ import { settings } from './settings.js';
  * "anonKey": "<public anon key>" } turns on the world board, backed by two Postgres functions (tools/leaderboard.sql):
  *   tr_submit(p_client, p_name, p_score, p_dist, p_coins, p_secs, p_day) -> [{ o_board, o_rank, o_best }]
  *   tr_top(p_board, p_limit, p_client)                                -> [{ o_name, o_score, o_dist, o_coins, o_at, o_me }]
- * Boards: 'all' (normal runs) and 'day:YYYY-MM-DD' (daily runs). Each player keeps one row per board (their best).
+ * Boards: 'all' + 'week:IYYY-IW' (normal runs; tr_top takes 'week' for the current one) and 'day:YYYY-MM-DD'
+ * (daily runs). Each player keeps one row per board (their best).
  * A run that can't be sent (offline) waits in `tabbyrush.board.pending` and goes out with the next one.
  */
 const MAX = 10;
@@ -131,6 +132,16 @@ async function rpc(fn, body) {
 /** Board key for a day key (0 = the all-time board of normal runs). */
 export const boardKey = (day) => (day ? `day:${isoDay(day)}` : 'all');
 
+/** This week's board key, as the server names it (ISO week of the UTC date: resets Monday 00:00 UTC). */
+export function weekKey(d = new Date()) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const wd = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - wd);
+  const y = t.getUTCFullYear();
+  const w = Math.ceil(((t - Date.UTC(y, 0, 1)) / 86400000 + 1) / 7);
+  return `week:${y}-${String(w).padStart(2, '0')}`;
+}
+
 /**
  * Send a finished run to the world board. Resolves { rank, best } or null (off / offline / refused).
  * An unsent run is kept (best one per board) and retried by flushPending().
@@ -143,16 +154,20 @@ export async function submitRemote({ score, dist, coins, secs, day = 0 }) {
       p_client: clientId(), p_name: playerName(), p_score: Math.floor(score), p_dist: Math.floor(dist),
       p_coins: Math.floor(coins), p_secs: run.secs, p_day: day ? isoDay(day) : null,
     });
-    const row = Array.isArray(rows) ? rows[0] : rows;
     dropPending(run);
-    if (!row) return null;
-    const res = { rank: Number(row.o_rank) || 0, best: Number(row.o_best) || score };
-    const ranks = store.get('board.ranks', {});
+    const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
     const key = boardKey(day);
-    const keep = ranks && typeof ranks === 'object' ? Object.fromEntries(Object.entries(ranks).filter(([k]) => k === 'all' || k === key)) : {};
-    keep[key] = res;
+    const pick = (b) => { const r = list.find((x) => x && x.o_board === b); return r ? { rank: Number(r.o_rank) || 0, best: Number(r.o_best) || score } : null; };
+    const main = pick(key) || pick(list[0]?.o_board);
+    if (!main) return null;
+    const wrow = list.find((x) => x && String(x.o_board).startsWith('week:'));
+    const week = wrow ? { rank: Number(wrow.o_rank) || 0, best: Number(wrow.o_best) || score, wk: String(wrow.o_board) } : null;
+    const ranks = store.get('board.ranks', {});
+    const keep = ranks && typeof ranks === 'object' ? Object.fromEntries(Object.entries(ranks).filter(([k]) => k === 'all' || k === 'week' || k === key)) : {};
+    keep[key] = main;
+    if (week) keep.week = week;
     store.set('board.ranks', keep);
-    return res;
+    return { ...main, week };
   } catch (e) {
     // 429 (rate limited), 5xx and network errors wait for a later try; other 4xx = refused for good
     if (!(e.status >= 400 && e.status < 500) || e.status === 429) keepPending(run);
@@ -196,7 +211,9 @@ export async function flushPending() {
 /** The player's last known world rank on a board: { rank, best } or null. */
 export function myRemoteRank(board) {
   const r = store.get('board.ranks', {});
-  return r && typeof r === 'object' && r[board] && r[board].rank > 0 ? r[board] : null;
+  const e = r && typeof r === 'object' ? r[board] : null;
+  if (!e || !(e.rank > 0)) return null;
+  return board === 'week' && e.wk !== weekKey() ? null : e; // last week's rank is history
 }
 
 /** Top entries of a world board: [{ name, score, dist, coins, at, me }], or throws when unreachable. */

@@ -17,9 +17,12 @@ export class BoardUI {
     this.click = click || (() => {});
     this.from = 'menu';
     this.tab = 'mine';
+    this.scope = 'week';  // world tab: this week's board or all-time
     this.token = 0;
     if (!ui.screens.includes('board')) ui.screens.push('board');
     this.tabs = [...document.querySelectorAll('#board-tabs button')];
+    this.scopes = [...document.querySelectorAll('#board-scope button')];
+    for (const b of this.scopes) b.addEventListener('click', () => { if (this.scope !== b.dataset.scope) { this.scope = b.dataset.scope; this.click(); this.render(); } });
     for (const b of this.tabs) b.addEventListener('click', () => { if (this.tab !== b.dataset.tab) { this.tab = b.dataset.tab; this.click(); this.render(); } });
     $('board-tabs').addEventListener('keydown', (e) => {
       const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
@@ -87,14 +90,22 @@ export class BoardUI {
     let rows = [];
     const local = (l) => l.map((e) => ({ name: e.n, score: e.s, dist: e.d, me: !!e.me }));
     const online = this.tab === 'world' || (this.tab === 'daily' && remote.on);
-    $('board-sub').textContent = this.tab === 'world' ? '全世界最強的虎斑跑者（每人只留最佳成績）'
+    const worldBoard = this.scope === 'week' ? 'week' : 'all';
+    $('board-scope').hidden = this.tab !== 'world';
+    for (const b of this.scopes) {
+      const on = b.dataset.scope === this.scope;
+      b.setAttribute('aria-checked', on);
+      b.tabIndex = on ? 0 : -1;
+    }
+    $('board-sub').textContent = this.tab === 'world'
+      ? (this.scope === 'week' ? '本週排行・每週一早上 8 點重置' : '全世界最強的虎斑跑者（每人只留最佳成績）')
       : this.tab === 'daily' ? (remote.on ? '今天所有人跑同一條賽道' : '今天的每日挑戰（這台裝置）') : '這台裝置上的前 10 名';
     if (online) {
       list.textContent = '';
       status.hidden = false;
       status.textContent = '讀取中…';
       try {
-        rows = await fetchRemote(this.tab === 'world' ? 'all' : boardKey(today));
+        rows = await fetchRemote(this.tab === 'world' ? worldBoard : boardKey(today));
       } catch {
         if (token !== this.token) return;
         status.textContent = '連不上排行榜，請稍後再試。';
@@ -107,7 +118,8 @@ export class BoardUI {
     list.textContent = '';
     status.hidden = rows.length > 0;
     status.textContent = this.tab === 'mine' ? '還沒有紀錄，跑一局就會出現！'
-      : this.tab === 'daily' ? '今天還沒有人跑每日挑戰，搶第一！' : '還沒有人上榜，快來搶第一！';
+      : this.tab === 'daily' ? '今天還沒有人跑每日挑戰，搶第一！'
+        : this.scope === 'week' ? '這週還沒有人上榜，快來搶第一！' : '還沒有人上榜，快來搶第一！';
     const frag = document.createDocumentFragment();
     rows.forEach((r, i) => {
       const li = document.createElement('li');
@@ -128,7 +140,7 @@ export class BoardUI {
       frag.appendChild(li);
     });
     // outside the top N: show where the player stands, below a gap
-    const mine = online ? myRemoteRank(this.tab === 'world' ? 'all' : boardKey(today)) : null;
+    const mine = online ? myRemoteRank(this.tab === 'world' ? worldBoard : boardKey(today)) : null;
     if (mine && !rows.some((r) => r.me) && mine.rank > rows.length) {
       const gap = document.createElement('li');
       gap.className = 'board-gap';

@@ -569,7 +569,10 @@
     color: var(--ink); font: 900 18px/1 var(--font-cjk); text-shadow: none; cursor: pointer; }
   .board-card { box-sizing: border-box; width: min(480px, 100%); max-height: calc(100vh - 40px);
     max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
-    grid-template-rows: auto auto auto auto minmax(0, 1fr) auto auto; gap: 10px; padding: 18px 16px 20px; }
+    display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 18px 16px 20px; }
+  .board-card > * { flex: none; }
+  .board-card > .board-body { flex: 1 1 auto; }
+  .board-scope { align-self: center; }
   .board-tabs { display: flex; gap: 6px; width: 100%; }
   .board-tabs button { flex: 1; min-height: 42px; padding: 6px 4px; border: 3px solid var(--ink); border-radius: 14px; background: #f1e3c4;
     box-shadow: 0 3px 0 var(--ink); color: var(--ink); font: 900 15px/1 var(--font-cjk); cursor: pointer; }
@@ -614,8 +617,8 @@
   @media (max-width: 820px), (max-aspect-ratio: 1/1) { .vs-banner { order: 3; } }
   /* short landscape phones: compact cards (two-column settings, list gets the height) */
   #board, #settings { overflow-y: auto; align-items: safe center; }
+  #gl-lost { z-index: 30; }
   @media (max-height: 520px) {
-    .board-card { grid-template-rows: auto auto auto minmax(0, 1fr) auto; } /* sub + note lines are hidden here */
     .board-card h2, .set-card h2 { font-size: 26px; }
     .board-card, .set-card { gap: 6px; padding: 10px 14px 12px; }
     .card .board-sub, .card .board-note, .set-label small { display: none; }
@@ -822,6 +825,10 @@
         <button type="button" role="tab" id="tab-daily" data-tab="daily">今日挑戰</button>
         <button type="button" role="tab" id="tab-mine" data-tab="mine">我的紀錄</button>
       </div>
+      <div class="seg board-scope" id="board-scope" role="radiogroup" aria-label="排行範圍" hidden>
+        <button type="button" role="radio" data-scope="week">本週</button>
+        <button type="button" role="radio" data-scope="all">總榜</button>
+      </div>
       <p class="board-sub" id="board-sub"></p>
       <label class="board-me"><span>我的名字</span><input type="text" id="board-name" maxlength="12" autocomplete="off" enterkeyhint="done" spellcheck="false"></label>
       <div class="board-body" role="tabpanel" aria-labelledby="board-title">
@@ -852,6 +859,13 @@
         <label class="set-row set-name"><span class="set-label">排行榜名稱</span><input type="text" id="set-name" maxlength="12" placeholder="虎斑跑者" autocomplete="off" enterkeyhint="done" spellcheck="false"></label>
       </div>
       <div class="card-actions"><button id="btn-set-back" class="btn btn-alt" type="button">返回</button></div>
+    </div>
+  </section>
+  <section id="gl-lost" class="screen dim" hidden role="alert">
+    <div class="card">
+      <h2>畫面暫停了</h2>
+      <p>裝置暫時收回了顯示資源，正在恢復…<br>等不到的話按下面重新載入（紀錄都已存好）。</p>
+      <div class="card-actions"><button id="btn-reload" class="btn" type="button">重新載入</button></div>
     </div>
   </section>
   <div id="mission-toast" role="status" aria-live="polite" hidden>

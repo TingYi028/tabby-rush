@@ -338,13 +338,18 @@ function resize() {
 window.addEventListener('resize', resize);
 
 function adapt(raw) {
-  if (G.state !== 'play') { quality.acc = quality.n = 0; return; }
+  if (G.state !== 'play') { quality.acc = quality.sq = quality.n = 0; return; }
   quality.acc += raw;
+  quality.sq = (quality.sq || 0) + raw * raw;
   if (++quality.n < 120) return;
   const avg = quality.acc / quality.n;
-  quality.acc = 0;
+  const sd = Math.sqrt(Math.max(0, quality.sq / quality.n - avg * avg));
+  quality.acc = quality.sq = 0;
   quality.n = 0;
-  quality.slow = avg > 1 / 45 ? quality.slow + 1 : 0;
+  // A steady ~33 ms is either a 30 Hz cap (low-power mode, battery saver) or a GPU just missing 60: the cheap big wins
+  // (MSAA, bloom) still go, but it never drags the picture down to the blurry, blocky bottom of the ladder.
+  const capped30 = Math.abs(avg - 1 / 30) < 0.003 && sd < 0.004;
+  quality.slow = avg > 1 / 45 && (!capped30 || quality.level < 2) ? quality.slow + 1 : 0;
   quality.fast = avg < 1 / 58 ? quality.fast + 1 : 0;
   let to = quality.level;
   if (quality.slow >= 2 && quality.level < QUALITY.length - 1) to = nextLevel(1);
@@ -521,7 +526,9 @@ function boardOver(score) {
   el.hidden = !rank;
   submitRemote(run).then((r) => {
     if (!r || G.lastRun !== run || G.state !== 'over') return;
-    el.textContent = `${run.day ? '今日挑戰全球' : '全球排行'}第 ${fmtN(r.rank)} 名${r.rank <= 10 ? '！' : ''}`;
+    const wk = !run.day && r.week ? r.week.rank : 0;
+    el.textContent = run.day ? `今日挑戰全球第 ${fmtN(r.rank)} 名${r.rank <= 10 ? '！' : ''}`
+      : wk ? `本週全球第 ${fmtN(wk)} 名${wk <= 10 ? '！' : ''}・總榜第 ${fmtN(r.rank)} 名` : `全球排行第 ${fmtN(r.rank)} 名${r.rank <= 10 ? '！' : ''}`;
     el.hidden = false;
   });
   const row = $('go-vs-row');
@@ -1189,8 +1196,26 @@ function updateDying(dt, raw) {
 
 let last = performance.now();
 let idleFrames = 0;
+
+// Phones may take the GPU back (backgrounded tab, driver reset): pause, say so, and rebuild when it is returned.
+let glLost = false;
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault(); // lets the browser hand the context back
+  glLost = true;
+  if (G.state === 'play') pause();
+  $('gl-lost').hidden = false;
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  glLost = false;
+  $('gl-lost').hidden = true;
+  applyQuality(); // render targets and the shadow map are rebuilt at the current size
+  idleFrames = 0;
+});
+$('btn-reload').addEventListener('click', () => location.reload());
+
 function frame(now) {
   requestAnimationFrame(frame);
+  if (glLost) { last = now; return; }
   // The menu backdrop runs at ~30 fps, play at most ~95 fps; still screens (pause, game over, revive, a card over
   // the menu) stop rendering after a few frames.
   if (now - last < (G.state === 'menu' ? 30 : 8.6)) return;
