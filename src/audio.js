@@ -87,11 +87,31 @@ export class AudioFX {
     this.unlocked = true;
   }
 
-  async fetchBuffer(url) {
+  /** Fetch and decode; `onProgress(0..1)` reports download progress when the size is known. */
+  async fetchBuffer(url, onProgress) {
     try {
       const r = await fetch(url);
       if (!r.ok) return null;
-      return await this.ctx.decodeAudioData(await r.arrayBuffer());
+      const total = Number(r.headers.get('content-length')) || 0;
+      let data;
+      if (onProgress && total && r.body) {
+        const reader = r.body.getReader(), chunks = [];
+        let got = 0;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          chunks.push(value);
+          got += value.length;
+          onProgress(Math.min(1, got / total));
+        }
+        data = new Uint8Array(got);
+        let o = 0;
+        for (const c of chunks) { data.set(c, o); o += c.length; }
+        data = data.buffer;
+      } else {
+        data = await r.arrayBuffer();
+      }
+      return await this.ctx.decodeAudioData(data);
     } catch { return null; }
   }
 
@@ -101,14 +121,17 @@ export class AudioFX {
     let list = {};
     try { const r = await fetch('assets/audio/music.json'); if (r.ok) list = await r.json(); } catch { /* no soundtrack */ }
     this.tracksPending = !!(list.game || list.menu);
-    if (this.tracksPending) this.onMusicLoading?.(true);
-    await Promise.all(['game', 'menu'].map(async (k) => {
-      if (!list[k]) return;
-      const b = await this.fetchBuffer(`assets/audio/${list[k]}`);
+    const keys = ['game', 'menu'].filter((k) => list[k]);
+    const prog = Object.fromEntries(keys.map((k) => [k, 0]));
+    const report = () => this.onProgress?.(keys.length ? keys.reduce((s, k) => s + prog[k], 0) / keys.length : 1);
+    report();
+    await Promise.all(keys.map(async (k) => {
+      const b = await this.fetchBuffer(`assets/audio/${list[k]}`, (p) => { prog[k] = p * 0.9; report(); });
       if (b) this.tracks[k] = seamless(this.ctx, b);
+      prog[k] = 1;
+      report();
     }));
     this.tracksPending = false;
-    this.onMusicLoading?.(false);
     if (this.mode) { const m = this.mode; this.mode = null; this.music(m); }
   }
 

@@ -455,10 +455,13 @@ window.addEventListener('blur', () => pause());
 
 async function boot() {
   ui.show('loading');
+  // Art and music download together; the bar shows both (art 40%, music 60%).
+  let artP = 0, musicP = 0;
+  const show = () => ui.loading(Math.min(0.99, artP * 0.4 + musicP * 0.6));
+  audio.onProgress = (p) => { musicP = p; show(); };
+  audio.preload();
   const fonts = Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
-  await Promise.all([fonts, loadImages((p) => ui.loading(p * 0.85))]);
-  audio.onMusicLoading = (on) => { document.getElementById('music-status').hidden = !on; };
-  audio.preload(); // music downloads after the art so it doesn't slow the first screen
+  await Promise.all([fonts, loadImages((p) => { artP = p; show(); }), audio.ready]);
   const mats = buildSharedMaterials();
   world = new World(scene, worldRoot);
   coins = new Coins(worldRoot);

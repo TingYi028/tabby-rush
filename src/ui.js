@@ -44,6 +44,7 @@ export class UI {
 
   loading(p) {
     $('load-fill').style.width = `${Math.round(p * 100)}%`;
+    $('load-text').textContent = `正在把軌道鋪好… ${Math.round(p * 100)}%`;
   }
 
   stats(best, bank) {

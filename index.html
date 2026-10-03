@@ -120,13 +120,6 @@
   kbd { display: inline-grid; place-items: center; min-width: 30px; height: 30px; padding: 0 6px; background: var(--cream);
     color: var(--ink); border: 2px solid var(--ink); border-radius: 8px; box-shadow: 0 3px 0 var(--ink);
     font: 16px/1 var(--font-display); text-shadow: none; }
-  #music-status { position: absolute; right: 16px; bottom: calc(env(safe-area-inset-bottom, 0px) + 16px); z-index: 5;
-    display: flex; align-items: center; gap: 8px; padding: 7px 14px 7px 10px; pointer-events: none;
-    background: var(--cream); border: 3px solid var(--ink); border-radius: 999px; box-shadow: 0 4px 0 var(--ink);
-    font: 900 14px/1 var(--font-cjk); color: var(--ink); }
-  #music-status i { width: 14px; height: 14px; border-radius: 50%; border: 3px solid var(--tangerine);
-    border-top-color: transparent; animation: spin 0.8s linear infinite; }
-  @keyframes spin { to { transform: rotate(360deg); } }
   .sound-hint { order: 6; opacity: 0.9; animation: pulse 1.6s ease-in-out infinite; }
   .corner { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 16px); right: 16px; }
 
@@ -209,12 +202,11 @@
     </div>
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
-  <div id="music-status" role="status" hidden><i></i>音樂載入中…</div>
 
   <section id="loading" class="screen">
     <div class="load-title">TABBY RUSH</div>
     <div class="load-bar"><i id="load-fill"></i></div>
-    <div class="load-text">正在把軌道鋪好…</div>
+    <div class="load-text" id="load-text">正在把軌道鋪好… 0%</div>
   </section>
 
   <section id="menu" class="screen" hidden>
