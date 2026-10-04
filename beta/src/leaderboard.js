@@ -232,12 +232,21 @@ export function myRemoteRank(board) {
   return board === 'week' && e.wk !== weekKey() ? null : e; // last week's rank is history
 }
 
-/** Top entries of a world board: [{ name, score, dist, coins, at, me }], or throws when unreachable. */
+/**
+ * Top entries of a world board: [{ name, tag, score, dist, coins, at, me }], or throws when unreachable.
+ * tag = the server's 4-digit player number ('' from an older server), shown after the name to tell same names apart.
+ */
 export async function fetchRemote(board, limit = 50) {
   if (!(await remote.ready)) return [];
   const rows = await rpc('tr_top', { p_board: board, p_limit: limit, p_client: clientId() });
-  return (Array.isArray(rows) ? rows : []).map((r) => ({
-    name: String(r.o_name ?? ''), score: Number(r.o_score) || 0, dist: Number(r.o_dist) || 0,
-    coins: Number(r.o_coins) || 0, at: r.o_at, me: !!r.o_me,
+  const list = (Array.isArray(rows) ? rows : []).map((r) => ({
+    name: String(r.o_name ?? ''), tag: /^[0-9]{4}$/.test(String(r.o_tag ?? '')) ? String(r.o_tag) : '',
+    score: Number(r.o_score) || 0, dist: Number(r.o_dist) || 0, coins: Number(r.o_coins) || 0, at: r.o_at, me: !!r.o_me,
   }));
+  const mine = list.find((r) => r.me && r.tag);
+  if (mine) store.set('board.tag', mine.tag);
+  return list;
 }
+
+/** This player's number on the world boards ('' until a board including them has been seen). */
+export const myTag = () => { const t = store.get('board.tag', ''); return /^[0-9]{4}$/.test(t) ? t : ''; };

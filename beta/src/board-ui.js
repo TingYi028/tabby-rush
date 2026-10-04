@@ -1,7 +1,10 @@
-import { localList, fetchRemote, remote, boardKey, playerName, myRemoteRank } from './leaderboard.js';
+import { localList, fetchRemote, remote, boardKey, playerName, myRemoteRank, myTag } from './leaderboard.js';
 import { settings } from './settings.js';
 import { applyName } from './settings-ui.js';
 import { dayKey } from './daily.js';
+
+/** "#1234" after a world-board name: tells players with the same name apart. */
+const tagEl = (tag) => { const t = document.createElement('small'); t.className = 'b-tag'; t.textContent = `#${tag}`; return t; };
 
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat('en-US');
@@ -146,6 +149,7 @@ export class BoardUI {
       const name = document.createElement('span');
       name.className = 'b-name';
       name.textContent = r.name || '神秘跑者';
+      if (r.tag) name.append(tagEl(r.tag));
       const dist = document.createElement('span');
       dist.className = 'b-dist';
       dist.textContent = `${fmt.format(r.dist)} m`;
@@ -169,6 +173,7 @@ export class BoardUI {
       const name = document.createElement('span');
       name.className = 'b-name';
       name.textContent = playerName();
+      if (myTag()) name.append(tagEl(myTag()));
       const dist = document.createElement('span');
       dist.className = 'b-dist';
       const score = document.createElement('b');
