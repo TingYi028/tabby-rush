@@ -584,6 +584,14 @@
     max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
     display: flex; flex-direction: column; gap: 12px; padding: 20px 16px 22px; }
   .help-card > * { flex: none; }
+  #name { overflow-y: auto; align-items: safe center; }
+  .name-card { box-sizing: border-box; width: min(420px, 100%); gap: 14px; }
+  .card.name-card p { margin: 0; font: 700 15px/1.5 var(--font-cjk); }
+  .name-card input { width: 100%; box-sizing: border-box; padding: 12px 14px; border: 3px solid var(--ink); border-radius: 14px;
+    background: var(--white); color: var(--ink); font: 900 20px/1 var(--font-cjk); text-align: center; user-select: text; -webkit-user-select: text; }
+  .name-card input:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+  .name-card input.bad { border-color: #e8361f; background: #ffe6df; animation: shop-nope 0.35s ease-in-out; }
+  @media (max-height: 520px) { .name-card { gap: 8px; padding-block: 12px 14px; } .name-card h2 { font-size: 26px; } }
   .help-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; gap: 8px; padding: 2px 4px 8px; text-align: left; }
   .help-row { display: grid; gap: 4px; padding: 9px 12px; background: var(--white); border: 3px solid var(--ink); border-radius: 14px; box-shadow: 0 3px 0 var(--ink); }
   .help-row > b { font: 900 16px/1.2 var(--font-cjk); color: var(--tangerine); text-shadow: 0 2px 0 rgba(59, 29, 14, 0.15); }
@@ -942,6 +950,17 @@
       <ul class="shop-list" id="shop-list"></ul>
       <p class="sr-only" id="shop-live" role="status" aria-live="polite"></p>
       <div class="card-actions"><button id="btn-shop-back" class="btn btn-alt" type="button">返回</button></div>
+    </div>
+  </section>
+  <section id="name" class="screen dim" hidden aria-labelledby="name-title">
+    <div class="card name-card">
+      <h2 id="name-title">你叫什麼名字？</h2>
+      <p>排行榜和挑戰朋友會顯示這個名字，之後可以在「設定」改。</p>
+      <input type="text" id="name-input" maxlength="12" autocomplete="nickname" enterkeyhint="go" spellcheck="false" aria-labelledby="name-title">
+      <div class="card-actions">
+        <button id="btn-name-go" class="btn" type="button">開始衝刺</button>
+        <button id="btn-name-skip" class="btn btn-alt btn-small" type="button">先跳過</button>
+      </div>
     </div>
   </section>
   <section id="help" class="screen dim" hidden aria-labelledby="help-title">

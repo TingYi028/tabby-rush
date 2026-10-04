@@ -25,6 +25,7 @@ import { TUNNEL, resetDirector, nextTunnel } from './director.js';
 import { settings, FXP, vibrate } from './settings.js';
 import { SettingsUI } from './settings-ui.js';
 import { HelpUI } from './help-ui.js';
+import { NameUI } from './name-ui.js';
 import { recordLocal, submitRemote, initRemote, flushPending, playerName, seedLocal, remote } from './leaderboard.js';
 import { BoardUI } from './board-ui.js';
 import { parseChallenge, shareChallenge, gameUrl } from './challenge.js';
@@ -132,7 +133,7 @@ const fmtN = (n) => Math.round(n).toLocaleString('en-US');
 window.addEventListener('keydown', (e) => { if (!document.getElementById('gl-lost').hidden) e.stopImmediatePropagation(); }, true);
 const audio = new AudioFX();
 const ui = new UI({
-  play: () => startRun(),
+  play: () => play(),
   retry: () => startRun(!!G.daily),
   pause: () => pause(),
   resume: () => resume(),
@@ -144,6 +145,12 @@ ui.setMuted(audio.muted);
 progression.init(G, { ui, audio }); // save v1 (migrates best/bank), shop + missions UI
 new SettingsUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
 new HelpUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+const nameUI = new NameUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+/** Menu starts (開始衝刺 / 每日挑戰 / Enter): the first one asks for a leaderboard name. */
+function play(daily = false) {
+  if (nameUI.needed()) nameUI.open(() => startRun(daily));
+  else startRun(daily);
+}
 audio.setVolumes(settings.get('music'), settings.get('sfx'));
 initRemote().then(() => { if (G.state === 'menu') showChallenge(); }); // before BoardUI, which waits on it to show the world tab
 seedLocal(G.best, progression.bestDist());
@@ -914,7 +921,7 @@ function gameOver() {
 // daily: today's challenge { day, seed, mod, claimed, reward } or null; mod: active modifier id ('' = none);
 // revives: revives bought this run (sets the price); reviveT: revive invulnerability left (bubble look)
 Object.assign(G, { daily: null, mod: '', revives: 0, reviveT: 0 });
-const dailyUI = new DailyUI(() => startRun(true));
+const dailyUI = new DailyUI(() => play(true));
 const revive = new ReviveOverlay(ui, {
   accept: () => acceptRevive(),
   decline: () => declineRevive(),
@@ -1323,7 +1330,7 @@ const KEYS = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   ArrowUp: 'jump', KeyW: 'jump', Space: 'jump', ArrowDown: 'roll', KeyS: 'roll',
 };
-const OVERLAYS = new Set(['settings', 'board', 'shop', 'help']);
+const OVERLAYS = new Set(['settings', 'board', 'shop', 'help', 'name']);
 window.addEventListener('keydown', (e) => {
   if (glLost || OVERLAYS.has(document.body.dataset.screen)) return; // their own handlers take the keys
   if (G.state === 'play') {
@@ -1337,7 +1344,7 @@ window.addEventListener('keydown', (e) => {
     revive.key(e);
   } else if (G.state === 'menu' && (e.code === 'Enter' || e.code === 'Space') && document.activeElement?.tagName !== 'BUTTON') {
     e.preventDefault();
-    startRun();
+    play();
   }
 });
 
