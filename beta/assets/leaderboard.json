@@ -1,1 +1,5 @@
-{ "provider": "none" }
+{
+ "provider": "supabase",
+ "url": "https://hymkticlclgcmqibiznc.supabase.co",
+ "anonKey": "sb_publishable_RB5hnhMjEMT3K7tAyZKOEA_bQOhdsB_"
+}
