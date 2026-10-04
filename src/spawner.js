@@ -60,8 +60,14 @@ export class Spawner {
     for (let p = Object.getPrototypeOf(obj); p && p !== Object.prototype; p = Object.getPrototypeOf(p)) {
       for (const m of Object.getOwnPropertyNames(p)) {
         const f = Object.getOwnPropertyDescriptor(p, m).value;
-        if (m === 'constructor' || typeof f !== 'function' || Object.hasOwn(obj, m)) continue;
-        obj[m] = (...a) => this.unseeded(() => f.apply(obj, a));
+        if (m === 'constructor' || typeof f !== 'function' || Object.prototype.hasOwnProperty.call(obj, m)) continue; // (Object.hasOwn: iOS 15.4+)
+        const sp = this;
+        // fast path outside generation (every frame: setDanger, signs...) allocates nothing
+        obj[m] = function () {
+          if (!sp.rng || Math.random !== sp.rng) return f.apply(obj, arguments);
+          const args = arguments;
+          return sp.unseeded(() => f.apply(obj, args));
+        };
       }
     }
     return obj;
@@ -83,6 +89,8 @@ export class Spawner {
     this.nextPower = 5 + C.randi(0, 3);
     this.lastBoost = -99;
     this.boostLane = -1;
+    this.padRow = -9;     // last row that had spring pads, and their lanes (the next row avoids flat train fronts there)
+    this.padLanes = [];
     this.active = active;
   }
 
@@ -115,7 +123,7 @@ export class Spawner {
     let g = 0;
     for (const o of this.obstacles) {
       if (o.type !== 'train' && o.type !== 'ramp') continue;
-      if (Math.abs(x - o.x) > 1.22 || s < o.s0 - 0.3 || s > o.s0 + o.len + 0.3) continue;
+      if (Math.abs(x - o.x) > C.LANE_W / 2 || s < o.s0 - 0.3 || s > o.s0 + o.len + 0.3) continue;
       let top, reach;
       if (o.type === 'train') {
         top = C.TRAIN_TOP;
@@ -143,8 +151,9 @@ export class Spawner {
   update(dt, dist) {
     const events = [];
     this.trackPace(dt, dist);
-    if (this.active) {
-      this.seeded(() => { while (C.START_GAP + this.k * C.SLOT < dist + C.VIEW_AHEAD) this.genSlot(); });
+    if (this.active && C.START_GAP + this.k * C.SLOT < dist + C.VIEW_AHEAD) {
+      this.genTo = dist + C.VIEW_AHEAD;
+      this.seeded(this.genAhead ||= () => { while (C.START_GAP + this.k * C.SLOT < this.genTo) this.genSlot(); });
     }
     for (let i = this.obstacles.length - 1; i >= 0; i--) {
       const o = this.obstacles[i];
@@ -253,6 +262,7 @@ export class Spawner {
     }
     // Never surge straight into a flat train front: the row after a boost strip gets a ramp in that lane.
     if (this.lastBoost === k - 1 && content[this.boostLane] === 'train') content[this.boostLane] = 'rampTrain';
+    if (this.padRow === k - 1) for (const L of this.padLanes) if (content[L] === 'train') content[L] = 'rampTrain';
     for (let L = 0; L < 3; L++) if (content[L] === 'train' || content[L] === 'moving') blocked[L] = true;
 
     // Fairness: from every lane open in the previous row there must be a sideways path to an open lane.
@@ -275,6 +285,8 @@ export class Spawner {
 
     tuneRow(this, k, s0, content, blocked, prevBlocked, breather); // zone theme + tunnel rules (director.js)
     this.blocked[k] = blocked;
+    this.padRow = k;
+    this.padLanes = [0, 1, 2].filter((L) => content[L] === 'pad');
 
     const info = [null, null, null];
     for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff);
@@ -393,13 +405,13 @@ export class Spawner {
       }
       if (content[L] === 'pad') {
         // a high arc of coins that only a spring launch can reach
-        for (let i = 1; i <= 8; i++) co.add(C.laneX(L), 1.2 + 4.8 * Math.sin((i / 9) * Math.PI), inf.at + i * 3.2);
+        for (let i = 1; i <= 7; i++) co.add(C.laneX(L), 1.2 + 4.8 * Math.sin((i / 9) * Math.PI), inf.at + i * 3.2);
       }
     }
     if (k < 1 || Math.random() > 0.82) return;
     let lane = safe;
     if (Math.random() < 0.3) {
-      const open = [0, 1, 2].filter((l) => !blocked[l] && content[l] !== 'body');
+      const open = [0, 1, 2].filter((l) => !blocked[l] && content[l] !== 'body' && !this.reserved(this.reserve, l));
       if (open.length) lane = C.pick(open);
     }
     const x = C.laneX(lane), c = content[lane], inf = info[lane];

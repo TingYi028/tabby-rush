@@ -11,7 +11,7 @@ const fmt = new Intl.NumberFormat('en-US');
 const COIN = 'assets/ui/icon_coin.webp';
 const NAMES = {
   magnet: POWER_META.magnet.label, sneakers: POWER_META.sneakers.label, x2: POWER_META.x2.label,
-  jetpack: POWER_META.jetpack.label, shield: '開局自帶護盾',
+  jetpack: POWER_META.jetpack.label, shield: '開局護盾',
 };
 const CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 const SKIP = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8.5A7.5 7.5 0 1 0 19.5 15" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><path d="M20 3.5v5.5h-5.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -172,7 +172,16 @@ export class MetaUI {
     t.textContent = item.text;
     t.hidden = !item.text;
     restart(el, 'show');
-    setTimeout(() => this.nextToast(), item.kind === 'info' ? 1600 : 2300);
+    this.toastTimer = setTimeout(() => this.nextToast(), item.kind === 'info' ? 1600 : 2300);
+  }
+
+  /** Drop queued banners and hide the current one (run start / end, back to the menu). */
+  clearToasts() {
+    this.queue.length = 0;
+    clearTimeout(this.toastTimer);
+    this.toastBusy = false;
+    const el = $('mission-toast');
+    if (el) { el.classList.remove('show'); el.hidden = true; }
   }
 
   /* ---------- game over ---------- */
@@ -233,8 +242,10 @@ export class MetaUI {
   describe(type, lv) {
     const a = this.api, max = a.SHOP[type].max;
     if (type === 'shield') {
+      // spell out that it is a per-run chance (a player read Lv1 as "always")
       const pct = (l) => `${Math.round(a.SHOP.shield.chance[l] * 100)}%`;
-      return lv >= max ? `機率 ${pct(lv)}・已滿級` : `機率 ${pct(lv)} → ${pct(lv + 1)}`;
+      if (lv >= max) return '每局必定帶護盾・已滿級';
+      return `每局 ${pct(lv)} → ${pct(lv + 1)} 機率`;
     }
     const sec = (l) => a.base[type] + a.UPGRADE_STEP * l;
     return lv >= max ? `持續 ${sec(lv)} 秒・已滿級` : `持續 ${sec(lv)} → ${sec(lv + 1)} 秒`;

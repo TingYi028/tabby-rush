@@ -3,6 +3,7 @@ import * as C from './config.js';
 import { TrickTracker, TRICK } from './tricks.js';
 import { images, makeTexture } from './assets.js';
 import { blobShadowCanvas, bubbleCanvas, makeCanvas } from './textures.js';
+import { FXP } from './settings.js';
 
 // Sprite frames are 512x640 with the feet at y=612; the hero stands ~1.95 units tall.
 const FRAME_H = 2.45;
@@ -181,9 +182,10 @@ export class Player {
       // spring pads launch the hero high enough to land on train roofs
       for (const o of w.spawner.obstacles) {
         if (o.type !== 'pad' || this.y > 0.5 || Math.abs(this.x - o.x) > 1.0) continue;
-        if (s >= o.s0 - 0.6 && s <= o.s0 + o.len) {
+        if (s >= o.s0 - 0.6 && Math.min(s, this.prevS) <= o.s0 + o.len) {
           this.vy = Math.sqrt(2 * C.GRAVITY * C.PAD_JUMP_H);
           this.onGround = false;
+          this.coyote = 0;
           this.rollT = 0;
           this.sx = 0.8; this.sy = 1.25;
           ev.push({ type: 'pad' });
@@ -193,7 +195,7 @@ export class Player {
       // speed-boost strips: one surge per strip, only when running over it on the ground
       for (const o of w.spawner.obstacles) {
         if (o.type !== 'boost' || o.used || !this.onGround || this.crashed || this.y > 0.5 || Math.abs(this.x - o.x) > 1.0) continue;
-        if (s >= o.s0 - 0.3 && s <= o.s0 + o.len) {
+        if (s >= o.s0 - 0.3 && Math.min(s, this.prevS) <= o.s0 + o.len) {
           o.used = true;
           ev.push({ type: 'boost' });
           break;
@@ -236,8 +238,9 @@ export class Player {
         if (w.invincible) { ev.push({ type: 'smash', obstacle: o }); continue; }
         const side = o.type === 'train' && Math.abs(prevX - o.x) >= half && this.lane !== this.prevLane;
         if (side) {
-          // bounced off the side of a train: back to the previous lane, stumble
-          this.lane = this.prevLane;
+          // bounced off the side of a train: back to the lane on the side he came from (a quick double
+          // lane change must not land him in the train's own lane), stumble
+          this.lane = this.prevLane = C.clamp(o.lane + Math.sign(prevX - o.x), 0, 2);
           this.x = prevX;
           this.leanT = 0;
           if (this.stumbleT > 0 && this.invuln <= 0) {
@@ -248,7 +251,10 @@ export class Player {
           }
           break;
         }
-        if (this.invuln > 0) continue;
+        if (this.invuln > 0) {
+          if (o.type === 'train') this.invuln = Math.max(this.invuln, 0.06); // stay ghosted until out of the body (dt <= 0.05)
+          continue;
+        }
         ev.push({ type: 'crash', obstacle: o, side: false });
         break;
       }
@@ -282,7 +288,8 @@ export class Player {
     this.mesh.position.set(this.x, this.y + (this.rollT > 0 && this.onGround ? Math.abs(Math.sin(this.runPhase * 2.2)) * 0.08 : 0), 0);
     this.mesh.scale.set(this.sx * (mirror ? -1 : 1), this.sy, 1);
     this.mesh.rotation.set(0, 0, this.tilt);
-    this.mesh.visible = !(this.invuln > 0 && Math.floor(this.invuln * 14) % 2 === 0);
+    // invulnerable: a soft see-through pulse (~3 Hz, never fully off) instead of on/off strobing
+    this.material.opacity = this.invuln > 0 ? (FXP.calm ? 0.55 : 0.55 + 0.3 * Math.cos(this.invuln * 20)) : 1;
 
     const air = this.y - this.ground;
     const k = C.clamp(1 - air / 4.5, 0.25, 1);

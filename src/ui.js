@@ -11,6 +11,26 @@ const POWER_META = {
 export const RUSH_ICON = 'assets/ui/icon_rush.webp';
 export { POWER_META };
 
+/**
+ * Long numbers on narrow phones: shrink a game-over value until its row fits, instead of wrapping the label;
+ * a row that still doesn't fit (7-digit score on a 320 px phone) puts the value under its label.
+ */
+function fitStats() {
+  for (const row of document.querySelectorAll('#over .go-row:not([hidden])')) {
+    const b = row.querySelector('b');
+    if (!b) continue;
+    const fits = () => row.scrollWidth <= row.clientWidth + 1;
+    const shrink = () => {
+      b.style.fontSize = '';
+      let px = parseFloat(getComputedStyle(b).fontSize);
+      while (!fits() && px > 12) b.style.fontSize = `${--px}px`;
+    };
+    row.classList.remove('stack');
+    shrink();
+    if (!fits()) { row.classList.add('stack'); shrink(); }
+  }
+}
+
 export class UI {
   constructor(h) {
     this.screens = ['loading', 'menu', 'pause', 'over'];
@@ -37,6 +57,12 @@ export class UI {
       wrap.appendChild(row);
       this.bars[k] = { row, fill: row.querySelector('i') };
     }
+    // game-over stats: refit whenever a value / row changes or the card resizes (rotation, toolbars)
+    const stats = document.querySelector('#over .go-stats');
+    let fitQ = 0;
+    const queueFit = () => { if (!fitQ) fitQ = requestAnimationFrame(() => { fitQ = 0; fitStats(); }); };
+    new MutationObserver(queueFit).observe(stats, { subtree: true, childList: true, characterData: true, attributeFilter: ['hidden'] });
+    if (window.ResizeObserver) new ResizeObserver(queueFit).observe(stats);
   }
 
   show(name) {
@@ -112,17 +138,21 @@ export class UI {
     const btn = $('btn-rush');
     btn.querySelector('kbd').hidden = touch;
     this.rushOn = false;
-    // Fires on click (pointer up) so a swipe that starts on the button still steers the hero;
-    // main.js sets suppressRush when that swipe was recognised.
-    this.suppressRush = false;
-    const fire = (e) => {
-      e.preventDefault();
-      e.stopPropagation();
+    // Pointer taps fire from main.js on pointer-up (rushTap) unless the touch became a swipe, so a swipe that
+    // starts on the button still steers the hero and a slightly sloppy tap still fires. `click` only covers
+    // keyboard activation (Enter / Space) and is ignored right after a pointer tap.
+    this.rushTapT = -1e9;
+    this.rushTap = () => {
+      this.rushTapT = performance.now();
       btn.blur();
-      if (this.suppressRush) { this.suppressRush = false; return; }
       if (h.rush) h.rush();
     };
-    btn.addEventListener('click', fire);
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (performance.now() - this.rushTapT < 800 || e.detail > 0) return; // pointer clicks are handled on pointer-up
+      if (h.rush) h.rush();
+    });
     // pooled coins that fly from the pickup to the HUD counter
     const wrap = $('coin-fly');
     this.fly = { pool: [], i: 0, t: -1e9 };

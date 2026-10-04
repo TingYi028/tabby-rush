@@ -1,4 +1,6 @@
 import * as THREE from 'three';
+
+document.documentElement.lang ||= 'zh-Hant'; // also inside hosts that wrap the page in their own <html>
 import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
@@ -16,10 +18,19 @@ import { AudioFX, store } from './audio.js';
 import { UI, POWER_META, RUSH_ICON } from './ui.js';
 import { TRICK, TRICK_BIT, TRICK_ALL, TRICK_LABEL } from './tricks.js';
 import * as progression from './progression.js';
-import { DAILY, DailyUI, dailyToday, dailyStatus, mulberry32, rowHook, completeDaily, recordDaily } from './daily.js';
+import { DAILY, DailyUI, dailyToday, dailyStatus, mulberry32, rowHook, completeDaily, recordDaily, dayKey } from './daily.js';
 import { REVIVE, ReviveOverlay, reviveCost, clearForRevive } from './revive.js';
 import { THEMES, ZONE, themeIndexAt } from './themes.js';
 import { TUNNEL, resetDirector, nextTunnel } from './director.js';
+import { settings, FXP, vibrate } from './settings.js';
+import { SettingsUI } from './settings-ui.js';
+import { HelpUI } from './help-ui.js';
+import { NameUI } from './name-ui.js';
+import { recordLocal, submitRemote, initRemote, flushPending, playerName, seedLocal, remote } from './leaderboard.js';
+import { BoardUI } from './board-ui.js';
+import { parseChallenge, shareChallenge, gameUrl } from './challenge.js';
+import { scoreCard } from './scorecard.js';
+import { DistanceMarkers } from './marker.js';
 
 /* ---------- renderer & post ---------- */
 
@@ -32,24 +43,34 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 setAniso(Math.min(8, renderer.capabilities.getMaxAnisotropy()));
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 1800);
+const camera = new THREE.PerspectiveCamera(58, 1, 0.3, 1800); // near 0.3: 3x the depth precision (no z-fighting far out)
 const worldRoot = new THREE.Group();
 scene.add(worldRoot);
 
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+// The environment map is a render-target texture: three doesn't redraw those after a lost GPU context, so it is rebuilt.
+let envRT = null;
+function buildEnvironment() {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const room = new RoomEnvironment();
+  envRT?.dispose();
+  envRT = pmrem.fromScene(room, 0.04);
+  scene.environment = envRT.texture;
+  room.dispose?.();
+  pmrem.dispose();
+}
+buildEnvironment();
 scene.environmentIntensity = 0.45;
 
 const FinalShader = {
   uniforms: {
     tDiffuse: { value: null }, uTime: { value: 0 }, uSpeed: { value: 0 }, uFlash: { value: 0 },
     uFlashColor: { value: new THREE.Color(1, 1, 1) }, uAspect: { value: 1 }, uVignette: { value: 0.3 },
-    uDanger: { value: 0 },
+    uDanger: { value: 0 }, uStreak: { value: 0.45 }, uStreakRate: { value: 16 },
   },
   vertexShader: /* glsl */`varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: /* glsl */`
     uniform sampler2D tDiffuse; uniform float uTime, uSpeed, uFlash, uAspect, uVignette; uniform vec3 uFlashColor;
-    uniform float uDanger;
+    uniform float uDanger, uStreak, uStreakRate;
     varying vec2 vUv;
     float hash(float n) { return fract(sin(n) * 43758.5453); }
     void main() {
@@ -67,9 +88,9 @@ const FinalShader = {
         }
         float a = atan(p.y, p.x);
         float seg = floor(a * 40.0);
-        float h = hash(seg + floor(uTime * 16.0) * 7.13);
+        float h = hash(seg + floor(uTime * uStreakRate) * 7.13);
         float streak = step(0.8, h) * smoothstep(0.36, 0.8, r) * (0.55 + 0.45 * hash(seg * 3.7));
-        c.rgb = mix(c.rgb, vec3(1.0), streak * uSpeed * 0.45);
+        c.rgb = mix(c.rgb, vec3(1.0), streak * uSpeed * uStreak);
       }
       c.rgb *= 1.0 - uVignette * smoothstep(0.42, 1.05, r);
       // oncoming-train warning: pulsing red edge glow (uDanger already carries the pulse, see updateDanger);
@@ -83,6 +104,8 @@ const FinalShader = {
 
 const rt = new THREE.WebGLRenderTarget(256, 256, { type: THREE.HalfFloatType, samples: 4 });
 const composer = new EffectComposer(renderer, rt);
+// RenderPass and the bloom composite use renderTarget2 (the clone); OutputPass writes renderTarget1, which needs no MSAA
+composer.renderTarget1.samples = 0;
 composer.addPass(new RenderPass(scene, camera));
 const bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.55, 0.5, 1.05);
 composer.addPass(bloom);
@@ -99,15 +122,18 @@ const G = {
   deathT: 0, flash: 0, camBlend: 1, dustT: 0, sparkT: 0,
   rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, smashPopT: 0,
 };
-let world, coins, spawner, player, fx, drone;
+let world, coins, spawner, player, fx, drone, markers;
 const feverFrame = document.getElementById('fever-frame');
 const FLAME_A = new THREE.Color(1.3, 0.75, 0.2);
 const FLAME_B = new THREE.Color(1.1, 0.35, 0.12);
 const RAINBOW = ['#ff6b6b', '#ffd23f', '#6bf0a0', '#6bb4ff'].map((c) => new THREE.Color(c).multiplyScalar(1.2));
 const fmtN = (n) => Math.round(n).toLocaleString('en-US');
+// While the lost-GPU notice is up no key reaches the game or the cards behind it (their handlers listen in the
+// capture phase too, so this one is registered before them); the notice's own button still works.
+window.addEventListener('keydown', (e) => { if (!document.getElementById('gl-lost').hidden) e.stopImmediatePropagation(); }, true);
 const audio = new AudioFX();
 const ui = new UI({
-  play: () => startRun(),
+  play: () => play(),
   retry: () => startRun(!!G.daily),
   pause: () => pause(),
   resume: () => resume(),
@@ -117,6 +143,22 @@ const ui = new UI({
 });
 ui.setMuted(audio.muted);
 progression.init(G, { ui, audio }); // save v1 (migrates best/bank), shop + missions UI
+new SettingsUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+new HelpUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+const nameUI = new NameUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+/** Menu starts (開始衝刺 / 每日挑戰 / Enter): the first one asks for a leaderboard name. */
+function play(daily = false) {
+  if (nameUI.needed()) nameUI.open(() => startRun(daily));
+  else startRun(daily);
+}
+audio.setVolumes(settings.get('music'), settings.get('sfx'));
+initRemote().then(() => { if (G.state === 'menu') showChallenge(); }); // before BoardUI, which waits on it to show the world tab
+seedLocal(G.best, progression.bestDist());
+const boardUI = new BoardUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
+settings.onChange((k) => {
+  if (k === 'music' || k === 'sfx') audio.setVolumes(settings.get('music'), settings.get('sfx'));
+  if ((k === 'fx' || k === 'calm') && world) { applyLook(); idleFrames = 0; }
+});
 ui.stats(G.best, G.bank);
 
 const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650)) + progression.multBonus();
@@ -148,9 +190,9 @@ function updateCamera(dt, raw) {
   rig.y = C.damp(rig.y, yNormal + (C.JET_Y + 2.9 - yNormal) * rig.jet, 5, dt);
   rig.trauma = Math.max(0, rig.trauma - raw * 1.5);
   const t = performance.now() / 1000, sh = rig.trauma * rig.trauma;
-  const reduce = reduceMQ.matches ? 0.3 : 1;
-  const sx = sh * 0.55 * reduce * (Math.sin(t * 41) + Math.sin(t * 23.7 + 1.3)) * 0.5;
-  const sy = sh * 0.45 * reduce * (Math.sin(t * 37 + 2) + Math.sin(t * 29.1)) * 0.5;
+  const reduce = reduceMQ.matches ? 0.3 : 1, shake = FXP.shake;
+  const sx = sh * 0.55 * shake * (Math.sin(t * 41) + Math.sin(t * 23.7 + 1.3)) * 0.5;
+  const sy = sh * 0.45 * shake * (Math.sin(t * 37 + 2) + Math.sin(t * 29.1)) * 0.5;
   // landing dip: a damped spring pulls the camera back up after landImpact() knocks it down
   rig.dipV += (-200 * rig.dip - 18 * rig.dipV) * dt;
   rig.dip += rig.dipV * dt;
@@ -183,8 +225,9 @@ G.hitStop = 0;   // seconds of near-frozen sim left (see frame())
 G.danger = 0;    // smoothed oncoming-train threat 0..1
 G.streakT = 0;   // speed-streak spawn accumulator
 const reduceMQ = matchMedia('(prefers-reduced-motion: reduce)');
-const motionScale = () => (reduceMQ.matches ? 0.3 : 1);
+const motionScale = () => (reduceMQ.matches || FXP.shake === 0 ? 0.3 : 1);
 const STREAK = new THREE.Color(0.85, 0.92, 1.1);
+const JET_X = [-0.28, 0.28];
 const warnEl = document.getElementById('train-warn');
 const warnV = new THREE.Vector3();
 const warn = { x: -1 };
@@ -213,10 +256,11 @@ function landImpact(e) {
 /** Stationary sparks along the walls far ahead; the run carries the camera past them, so speed reads from frame one. */
 function emitSpeedStreaks(dt) {
   if (G.state !== 'play') return;
-  G.streakT += dt * (25 + 70 * speedNorm());
+  G.streakT += dt * (25 + 70 * speedNorm()) * FXP.particles;
   for (; G.streakT >= 1; G.streakT -= 1) {
     const side = Math.random() < 0.5 ? -1 : 1;
-    fx.add.emit(side * C.rand(3.5, 6), C.rand(0.5, 5), -G.dist - 40, 0, 0, 0, C.rand(1.8, 2.2), 0.25, 0.25, STREAK, 0.55, 0, 0);
+    const life = Math.min(C.rand(1.8, 2.2), 36 / Math.max(10, runSpeed()));
+    fx.add.emit(side * C.rand(3.5, 6), C.rand(0.5, 5), -G.dist - 40, 0, 0, 0, life, 0.25, 0.25, STREAK, 0.55, 0, 0);
   }
 }
 
@@ -233,7 +277,7 @@ function updateDanger(raw, t) {
   }
   G.danger = C.damp(G.danger, danger, danger > G.danger ? 30 : 9, raw);
   // ~2.9 Hz pulse (sin(t*18)), kept shallow and below the 3-flashes/s photosensitivity line
-  const pulse = reduceMQ.matches ? 0.8 : 0.775 + 0.225 * Math.sin(t * 18);
+  const pulse = 0.8 + (0.225 * Math.sin(t * 18) - 0.025) * FXP.pulse;
   finalPass.uniforms.uDanger.value = G.danger * pulse;
   if (!warnEl) return;
   if (threat) {
@@ -260,8 +304,44 @@ function updateFeel(raw, t) {
 
 /* ---------- sizing & adaptive quality ---------- */
 
-const quality = { level: 0, acc: 0, n: 0 };
-function dprCap() { return [1.5, 1.25, 1, 0.85][quality.level]; }
+/*
+ * Adaptive quality ladder, cheapest loss first: 0 full | 1 no MSAA | 2 no bloom, DPR <= 1.25 | 3 DPR <= 1
+ * | 4 DPR 0.9, 512 shadow map. Steps that change nothing on this screen are skipped. Two slow windows (avg
+ * frame > 22 ms) step down; six fast ones (< 17 ms) step back up, unless that level already proved too slow.
+ * The level is remembered per device, so a weak PC doesn't stutter through the ladder every session.
+ */
+const QUALITY = [
+  { samples: 4, bloom: true, dpr: 1.5, shadow: 1024 },
+  { samples: 0, bloom: true, dpr: 1.5, shadow: 1024 },
+  { samples: 0, bloom: false, dpr: 1.25, shadow: 1024 },
+  { samples: 0, bloom: false, dpr: 1, shadow: 1024 },
+  { samples: 0, bloom: false, dpr: 0.9, shadow: 512 },
+];
+const weakDevice = (navigator.deviceMemory && navigator.deviceMemory <= 4) || (navigator.hardwareConcurrency && navigator.hardwareConcurrency <= 4);
+const quality = { level: Math.min(QUALITY.length - 1, Math.max(0, store.get('quality', weakDevice ? 1 : 0) | 0)), acc: 0, n: 0, slow: 0, fast: 0, floor: 0 };
+function dprCap() { return QUALITY[quality.level].dpr; }
+
+/** Apply quality.level: MSAA, bloom, shadow-map size and pixel ratio. */
+function applyQuality() {
+  const q = QUALITY[quality.level], rt2 = composer.renderTarget2;
+  if (rt2.samples !== q.samples) { rt2.dispose(); rt2.samples = q.samples; }
+  bloom.enabled = q.bloom;
+  if (world && world.sun.shadow.mapSize.x !== q.shadow) {
+    world.sun.shadow.mapSize.set(q.shadow, q.shadow);
+    world.sun.shadow.map?.dispose();
+    world.sun.shadow.map = null;
+  }
+  resize();
+}
+
+/** Next level in direction d that actually changes something on this screen. */
+function nextLevel(d) {
+  const native = window.devicePixelRatio || 1;
+  const eff = (l) => { const q = QUALITY[l]; return `${q.samples}|${q.bloom}|${Math.min(native, q.dpr)}|${q.shadow}`; };
+  let l = quality.level + d;
+  while (l > 0 && l < QUALITY.length - 1 && eff(l) === eff(quality.level)) l += d;
+  return Math.max(quality.floor, Math.min(QUALITY.length - 1, l));
+}
 
 function resize() {
   const w = window.innerWidth, h = window.innerHeight;
@@ -280,29 +360,44 @@ function resize() {
 window.addEventListener('resize', resize);
 
 function adapt(raw) {
-  if (G.state !== 'play') return;
+  if (G.state !== 'play') { quality.acc = quality.sq = quality.n = 0; return; }
   quality.acc += raw;
+  quality.sq = (quality.sq || 0) + raw * raw;
   if (++quality.n < 120) return;
   const avg = quality.acc / quality.n;
-  quality.acc = 0;
+  const sd = Math.sqrt(Math.max(0, quality.sq / quality.n - avg * avg));
+  quality.acc = quality.sq = 0;
   quality.n = 0;
-  if (avg > 1 / 45 && quality.level < 3) {
-    quality.level++;
-    if (quality.level >= 2) bloom.enabled = false;
-    if (quality.level >= 3) {
-      world.sun.shadow.mapSize.set(512, 512);
-      world.sun.shadow.map?.dispose();
-      world.sun.shadow.map = null;
-    }
-    resize();
-  }
+  // A steady ~33 ms is either a 30 Hz cap (low-power mode, battery saver) or a GPU just missing 60: the cheap big wins
+  // (MSAA, bloom) still go, but it never drags the picture down to the blurry, blocky bottom of the ladder.
+  const capped30 = Math.abs(avg - 1 / 30) < 0.003 && sd < 0.004;
+  quality.slow = avg > 1 / 45 && (!capped30 || quality.level < 2) ? quality.slow + 1 : 0;
+  quality.fast = avg < 1 / 58 ? quality.fast + 1 : 0;
+  let to = quality.level;
+  if (quality.slow >= 2 && quality.level < QUALITY.length - 1) to = nextLevel(1);
+  else if (quality.fast >= 6 && quality.level > quality.floor) to = nextLevel(-1);
+  if (to === quality.level) return;
+  // stepping back down to a level that was just too slow pins it as the floor for this session
+  if (to > quality.level && quality.raised) quality.floor = to;
+  quality.raised = to < quality.level;
+  quality.level = to;
+  quality.slow = quality.fast = 0;
+  store.set('quality', to);
+  applyQuality();
 }
 
 /* ---------- flow ---------- */
 
+let lastFlash = -1e9;
+/** Screen flash, scaled by the effects setting; a flash within 0.35 s of the last one is damped (no strobing). */
 function flash(color, amount) {
-  finalPass.uniforms.uFlashColor.value.set(color);
-  G.flash = Math.max(G.flash, amount);
+  const now = performance.now();
+  let a = Math.min(FXP.cap, amount * FXP.flash);
+  if (now - lastFlash < 350) a *= 0.4;
+  if (a < 0.02) return;
+  lastFlash = now;
+  if (a >= G.flash) finalPass.uniforms.uFlashColor.value.setStyle(color, THREE.LinearSRGBColorSpace);
+  G.flash = Math.max(G.flash, a);
 }
 
 /** `daily`: today's seeded challenge track with its weekday modifier instead of a random one. */
@@ -333,12 +428,174 @@ function startRun(daily = false) {
   ui.show('hud');
   ui.toast('衝啊！', null);
   dailyKickoff();
+  setupMarkers();
+  tutorial.on = progression.runsPlayed() < 3 && !G.daily;
+  tutorial.seen = 0;
+  hideHint();
 }
+
+/* ---------- first-run hints: the first hurdle / sign / train in the hero's lane gets a swipe hint + a beat of slow-mo ---------- */
+
+const tutorial = { on: false, seen: 0, shown: null, t: 0 };
+const HINTS = {
+  jump: { bit: 1, dir: 'up', touch: '往上滑　跳過柵欄！', keys: '按 <kbd>↑</kbd> 跳過柵欄！' },
+  roll: { bit: 2, dir: 'down', touch: '往下滑　鑽過看板！', keys: '按 <kbd>↓</kbd> 翻滾鑽過！' },
+  lane: { bit: 4, dir: 'side', touch: '左右滑　換軌道！', keys: '按 <kbd>←</kbd><kbd>→</kbd> 換軌道！' },
+};
+
+function showHint(kind) {
+  const h = HINTS[kind], el = $('tut-hint');
+  tutorial.seen |= h.bit;
+  tutorial.shown = kind;
+  tutorial.t = 1.6;
+  el.dataset.dir = h.dir;
+  el.querySelector('span').innerHTML = ui.touch ? h.touch : h.keys; // fixed strings only
+  el.hidden = false;
+  G.slowmo = Math.max(G.slowmo, 0.45); // a short beat of slow motion to read it
+}
+
+function hideHint(kind) {
+  if (kind && tutorial.shown !== kind) return;
+  tutorial.shown = null;
+  $('tut-hint').hidden = true;
+}
+
+function updateTutorial(dt) {
+  if (tutorial.shown) {
+    tutorial.t -= dt;
+    if (tutorial.t <= 0) hideHint();
+    return;
+  }
+  if (tutorial.seen === 7 || G.power.jetpack > 0 || G.fever > 0 || player.y > 1) return; // RUSH smashes through anyway
+  const v = Math.max(1, runSpeed());
+  for (const o of spawner.obstacles) {
+    if (o.lane !== player.lane || (o.y0 || 0) > player.y + 0.5) continue;
+    const tt = (o.s0 - G.dist) / (v + (o.moving ? Math.max(0, o.speed) : 0));
+    const kind = o.type === 'hurdle' ? 'jump' : o.type === 'overhead' ? 'roll' : o.type === 'train' ? 'lane' : null;
+    if (!kind || (tutorial.seen & HINTS[kind].bit) || tt < 0.45 || tt > (kind === 'lane' ? 1.5 : 1.1)) continue;
+    // a train with a ramp in front of it can be run over: not a lane-change lesson
+    if (kind === 'lane' && spawner.obstacles.some((q) => q.type === 'ramp' && q.lane === o.lane && Math.abs(q.s0 + q.len - o.s0) < 0.3)) continue;
+    showHint(kind);
+    return;
+  }
+}
+
+/* ---------- best-distance / friend-challenge markers, leaderboard + challenge results ---------- */
+
+G.vs = parseChallenge(); // a friend's challenge link: { score, dist, name }
+const $ = (id) => document.getElementById(id);
+
+function setupMarkers() {
+  G.vsBeat = false;
+  const best = progression.bestDist();
+  const list = [];
+  if (best > 60) list.push({ dist: best, top: '最佳紀錄', bottom: `${fmtN(best)} m`, tone: 'best' });
+  if (G.vs && !G.daily && G.vs.dist > 60) list.push({ dist: G.vs.dist, top: G.vs.name, bottom: `${fmtN(G.vs.dist)} m`, tone: 'friend' });
+  markers.set(list);
+}
+
+function updateMarkers() {
+  const passed = markers.update(G.dist);
+  if (passed) {
+    for (const m of passed) {
+      if (m.tone === 'best') { ui.toast('突破最佳距離！', null, 'hot'); audio.play('newbest', { vol: 0.5 }); }
+      else { ui.toast(`追過 ${m.top}！`, null, 'cool'); audio.play('powerup', { vol: 0.6, rate: 1.2 }); }
+      flash('#fff0a0', 0.2);
+    }
+  }
+  if (G.vs && !G.daily && !G.vsBeat && G.score > G.vs.score) {
+    G.vsBeat = true;
+    ui.popup(`分數超越 ${G.vs.name}！`, 'hot', 1.2);
+    audio.play('newbest', { vol: 0.45, rate: 1.1 });
+  }
+}
+
+function showChallenge() {
+  $('vs-banner').hidden = !G.vs;
+  // one-time "what's new" chip (hidden while a friend's challenge banner is up); it names the world board only once
+  // that is really on, and comes back once for players who saw it before the world board went live
+  $('news-text').textContent = remote.on ? '全球排行榜・挑戰朋友・特效設定' : '排行榜・挑戰朋友・特效設定';
+  $('news-chip').hidden = !!G.vs || newsSeen();
+  if (!G.vs) return;
+  $('vs-name').textContent = G.vs.name;
+  $('vs-score').textContent = fmtN(G.vs.score);
+}
+const NEWS_ID = '2026-10-04';
+const NEWS_ALL = `${NEWS_ID}+world`;
+let newsDismissed = false; // this session (the world board may turn on right after a tap on a slow network)
+const newsSeen = () => { const v = store.get('news', ''); return newsDismissed || v === NEWS_ALL || (v === NEWS_ID && !remote.on); };
+window.addEventListener('hashchange', () => {
+  const vs = parseChallenge();
+  if (!vs) return;
+  G.vs = vs;
+  if (G.state === 'menu') showChallenge();
+});
+$('news-chip').addEventListener('click', () => {
+  newsDismissed = true;
+  store.set('news', remote.on ? NEWS_ALL : NEWS_ID);
+  $('news-chip').hidden = true;
+  boardUI.open('menu');
+});
+$('vs-close').addEventListener('click', () => {
+  audio.play('ui_click', { vol: 0.6 });
+  G.vs = null;
+  showChallenge();
+  if (location.hash.startsWith('#vs=')) history.replaceState(null, '', location.pathname + location.search);
+});
+
+/** Game-over: local rank now, world rank when the server answers; the friend-challenge result row. */
+function boardOver(score) {
+  const run = { score, dist: Math.floor(G.dist), coins: G.coins, secs: G.time, day: G.daily ? G.daily.day : 0 };
+  G.lastRun = run;
+  // the share image is drawn now; a tap only uses it once it is ready (waiting would spend the tap's activation)
+  G.card = null;
+  if (ui.touch) scoreCard({ score, dist: run.dist, name: playerName(), host: gameUrl() }).then((f) => { if (G.lastRun === run) G.card = f; }, () => {});
+  const rank = recordLocal(run), el = $('go-rank');
+  const where = run.day ? '今日挑戰' : '我的紀錄';
+  el.textContent = rank ? `${where}第 ${rank} 名${rank === 1 ? '！' : ''}` : '';
+  el.hidden = !rank;
+  submitRemote(run).then((r) => {
+    if (!r || G.lastRun !== run || G.state !== 'over') return;
+    const wk = !run.day && r.week ? r.week.rank : 0;
+    const top = (n) => (n <= 10 ? '！' : '');
+    const parts = run.day ? [r.rank && `今日挑戰全球第 ${fmtN(r.rank)} 名${top(r.rank)}`]
+      : [wk && `本週全球第 ${fmtN(wk)} 名${top(wk)}`, r.rank && (wk ? `總榜第 ${fmtN(r.rank)} 名` : `全球排行第 ${fmtN(r.rank)} 名${top(r.rank)}`)];
+    const text = parts.filter(Boolean).join('・');
+    if (!text) return;
+    el.textContent = text;
+    el.hidden = false;
+  });
+  const row = $('go-vs-row');
+  row.hidden = !G.vs || !!G.daily;
+  if (!row.hidden) {
+    const win = score > G.vs.score, res = $('go-vs-result');
+    $('go-vs-label').textContent = `挑戰 ${G.vs.name}`;
+    res.textContent = win ? '勝利！' : `差 ${fmtN(G.vs.score - score)} 分`;
+    res.className = win ? 'win' : 'lose';
+  }
+}
+
+$('btn-share').addEventListener('click', async (e) => {
+  const btn = e.currentTarget, run = G.lastRun;
+  audio.play('ui_click', { vol: 0.6 });
+  if (!run || btn.dataset.busy) return;
+  btn.dataset.busy = '1';
+  const info = { score: run.score, dist: run.dist, name: playerName() };
+  // phones share the score card image along with the link when it is ready; share() must run in the tap's activation
+  const res = await shareChallenge(info, G.card);
+  const label = btn.lastChild;
+  if (res === 'copied' || res === 'failed') {
+    label.textContent = res === 'copied' ? '已複製連結！' : '請截圖分享';
+    clearTimeout(btn.labelT);
+    btn.labelT = setTimeout(() => { label.textContent = '挑戰朋友'; }, 2000);
+  }
+  delete btn.dataset.busy;
+});
 
 function pause() {
   if (G.state !== 'play') return;
   G.state = 'pause';
-  swipe = null;
+  swipes.clear();
   progression.pause();
   ui.show('pause');
   if (audio.ctx) audio.ctx.suspend();
@@ -346,7 +603,7 @@ function pause() {
 }
 
 function resume() {
-  if (G.state !== 'pause') return;
+  if (G.state !== 'pause' || glLost) return;
   G.state = 'play';
   ui.show('hud');
   if (audio.ctx) audio.ctx.resume();
@@ -371,6 +628,10 @@ function toMenu() {
   player.reset();
   fx.clear();
   progression.menu();
+  hideHint();
+  markers.set([]);
+  showChallenge();
+  flushPending();
   resetZones();
   ui.stats(G.best, G.bank);
   dailyUI.refresh();
@@ -383,6 +644,7 @@ function grantPower(type) {
   else G.power[type] = progression.powerTime(type);
   progression.track('power', type);
   audio.play('powerup', { vol: 0.8 });
+  vibrate(15);
   ui.toast(`${POWER_META[type].label}！`, POWER_META[type].icon);
   const col = { magnet: FX_COLORS.red, sneakers: FX_COLORS.green, x2: FX_COLORS.yellow, shield: FX_COLORS.blue, jetpack: FX_COLORS.yellow }[type];
   fx.burst(player.x, player.y + 1, -G.dist, col, 34, 8);
@@ -462,6 +724,7 @@ function startFever() {
   G.power.magnet = Math.max(G.power.magnet, C.FEVER_TIME);
   progression.track('rush');
   audio.play('rush', { vol: 1 });
+  vibrate([20, 25, 45]);
   audio.setRate(1.08);
   ui.toast('TABBY RUSH！', RUSH_ICON);
   flash('#ffe36b', 0.5);
@@ -514,7 +777,7 @@ function updateZones(dt) {
   } else if (zone.phase === 1 && G.dist >= tn + TUNNEL.len + 4) {
     // the camera (~7 m behind) reaches daylight: white-out, then the zone light returns
     zone.phase = 2;
-    flash('#fffaf0', reduceMQ.matches ? 0.15 : 0.55);
+    flash('#fffaf0', 0.55);
     ui.popup('重見光明！', 'sun');
   }
 }
@@ -523,8 +786,8 @@ function updateZones(dt) {
 function applyLook() {
   const L = world.look;
   renderer.toneMappingExposure = L.exposure;
-  bloom.strength = L.bloom;
-  bloom.threshold = L.bloomThreshold;
+  bloom.strength = L.bloom * FXP.bloom;
+  bloom.threshold = L.bloomThreshold + FXP.bloomBias;
   player.material.color.copy(L.hero);
 }
 
@@ -555,6 +818,7 @@ function awardTrick(kind, perfect = false, label = null) {
   ui.popup(`${text} +${fmtN(bonus)}`, perfect ? 'hot' : 'sun', 1 + 0.1 * m);
   if (perfect) {
     hitStop(0.04);
+    vibrate(12);
     flash('#ffffff', 0.12);
     rig.trauma = Math.max(rig.trauma, 0.2);
     if (G.slowCd <= 0) { G.slowmo = TRICK.slowmo; G.slowCd = TRICK.slowmoCooldown; }
@@ -615,6 +879,7 @@ function crash(o) {
     spawner.smash(o);
     player.invuln = 1.4;
     audio.play('shield_break', { vol: 0.9 });
+    vibrate(35);
     fx.burst(player.x, player.y + 1.2, -G.dist - 0.5, FX_COLORS.blue, 40, 10);
     rig.trauma = Math.max(rig.trauma, 0.55);
     hitStop(0.1);
@@ -623,11 +888,13 @@ function crash(o) {
     return;
   }
   player.crashed = true;
+  hideHint();
   G.state = 'dying';
   G.deathT = 0;
   G.timeScale = 0.3;
   hitStop(0.14);
   audio.play('crash', { vol: 1 });
+  vibrate([45, 35, 70]);
   audio.music('off');
   rig.trauma = 1;
   flash('#ffffff', 0.55);
@@ -645,6 +912,7 @@ function gameOver() {
   progression.endRun(G); // commit missions, save, fill the bank + mission rows on the card
   ui.gameOver({ score, coins: G.coins, dist: Math.floor(G.dist), best: G.best, newBest });
   dailyOver(score);
+  boardOver(score);
   audio.play(newBest ? 'newbest' : 'gameover', { vol: 0.8 });
 }
 
@@ -653,7 +921,7 @@ function gameOver() {
 // daily: today's challenge { day, seed, mod, claimed, reward } or null; mod: active modifier id ('' = none);
 // revives: revives bought this run (sets the price); reviveT: revive invulnerability left (bubble look)
 Object.assign(G, { daily: null, mod: '', revives: 0, reviveT: 0 });
-const dailyUI = new DailyUI(() => startRun(true));
+const dailyUI = new DailyUI(() => play(true));
 const revive = new ReviveOverlay(ui, {
   accept: () => acceptRevive(),
   decline: () => declineRevive(),
@@ -668,6 +936,7 @@ function setupRunMode(daily) {
   G.reviveT = 0;
   spawner.rng = G.daily ? mulberry32(G.daily.seed) : null;
   spawner.rowHook = rowHook(G.mod);
+  spawner.padsOnly = G.mod === 'pads'; // zone barriers / roof bars respect the modifier too
 }
 
 /** Start-line effects of today's modifier (the rest are read in place: G.mod in updatePlay/addRush, the row hook). */
@@ -686,7 +955,7 @@ function updateDaily() {
   if (!r) { ui.popup('今日挑戰完成！', 'cool'); return; }
   G.daily.reward = r;
   G.bank += r.coins;
-  store.set('bank', G.bank);
+  progression.saveNow();
   audio.play('powerup', { vol: 0.8, rate: 1.1 });
   ui.toast(`每日挑戰完成！+${fmtN(r.coins)}`, 'assets/ui/icon_coin.webp');
   flash('#fff0a0', 0.25);
@@ -735,7 +1004,7 @@ function spendCoins(n) {
   const fromBank = Math.min(G.bank, n);
   G.bank -= fromBank;
   G.coins -= n - fromBank;
-  store.set('bank', G.bank);
+  progression.saveNow();
   return true;
 }
 
@@ -755,12 +1024,13 @@ function updateReviveGlow(dt) {
 function handlePlayerEvents(ev) {
   for (const e of ev) {
     switch (e.type) {
-      case 'lane': audio.play('lane_switch', { vol: 0.35, rate: C.rand(0.95, 1.08) }); laneKick(); break;
+      case 'lane': audio.play('lane_switch', { vol: 0.35, rate: C.rand(0.95, 1.08) }); laneKick(); hideHint('lane'); break;
       case 'jump':
+        hideHint('jump');
         audio.play('jump', { vol: 0.55, rate: e.sneakers ? 0.85 : 1 });
         if (e.sneakers) fx.burst(player.x, player.y + 0.1, -G.dist, FX_COLORS.green, 16, 5);
         break;
-      case 'roll': audio.play('roll', { vol: 0.5 }); break;
+      case 'roll': audio.play('roll', { vol: 0.5 }); hideHint('roll'); break;
       case 'land': landImpact(e); break;
       case 'stumble':
         audio.play('stumble', { vol: 0.8 });
@@ -811,9 +1081,11 @@ function emitAmbient(dt) {
     if (G.power.sneakers > 0 && !player.onGround) fx.trail(player.x, player.y, -G.dist + 0.2, FX_COLORS.green);
     if (G.power.x2 > 0) fx.trail(player.x + C.rand(-0.5, 0.5), player.y + 2.1, -G.dist, FX_COLORS.yellow);
   }
-  if (G.power.jetpack > 0) {
+  G.jetT = (G.jetT || 0) - dt;
+  if (G.power.jetpack > 0 && G.jetT <= 0) {
+    G.jetT = 1 / 60;
     // twin thruster flames, small so the hero stays readable
-    for (const ox of [-0.28, 0.28]) {
+    for (const ox of JET_X) {
       fx.add.emit(player.x + ox, player.y + 0.55, -G.dist + 0.35, C.rand(-0.3, 0.3), C.rand(-7, -5), C.rand(0.5, 1.5),
         C.rand(0.12, 0.2), C.rand(0.3, 0.45), 0.05, Math.random() < 0.5 ? FLAME_A : FLAME_B, 0.85, 0, 2);
     }
@@ -821,7 +1093,7 @@ function emitAmbient(dt) {
   G.feverT = (G.feverT || 0) - dt;
   if (G.fever > 0 && G.feverT <= 0) {
     // rainbow sparks streaming off both sides, never over the hero's body
-    G.feverT = 0.035;
+    G.feverT = 0.035 / Math.max(0.3, FXP.particles);
     const side = Math.random() < 0.5 ? -1 : 1;
     fx.add.emit(player.x + side * C.rand(0.75, 1.1), player.y + C.rand(0.3, 1.8), -G.dist - 0.3, side * C.rand(0.5, 1.5),
       C.rand(-0.3, 0.6), C.rand(4, 7), C.rand(0.25, 0.4), C.rand(0.3, 0.5), 0.05, RAINBOW[(Math.random() * 4) | 0], 0.75, 0, 1);
@@ -849,7 +1121,7 @@ function updatePowerups(dt) {
     p.obj.icon.material.rotation = Math.sin(p.t * 2.2) * 0.18;
     const s = 1 + Math.sin(p.t * 5) * 0.05;
     p.obj.glow.scale.set(2.6 * s, 2.6 * s, 1);
-    if (G.state === 'play' && Math.abs(p.s - G.dist) < 1.1 && Math.abs(p.x - player.x) < 1.15
+    if (G.state === 'play' && p.s > G.prevDist - 1.1 && p.s < G.dist + 1.1 && Math.abs(p.x - player.x) < 1.15
       && Math.abs(p.y - (player.y + 0.9)) < 1.7) {
       grantPower(p.type);
       spawner.removePower(p);
@@ -858,6 +1130,7 @@ function updatePowerups(dt) {
 }
 
 function stepWorld(dt, speed) {
+  G.prevDist = G.dist;
   G.dist += speed * dt;
   worldRoot.position.z = G.dist;
   const sev = spawner.update(dt, G.dist);
@@ -885,8 +1158,10 @@ function updatePlay(dt) {
   if (G.state !== 'play') return;
   updateReviveGlow(dt);
   updateDaily();
+  updateMarkers();
+  if (tutorial.on) updateTutorial(dt);
 
-  const got = coins.update(dt, G.time, G.dist, player.x, player.y, G.power.magnet > 0);
+  const got = coins.update(dt, G.time, G.dist, player.x, player.y, G.power.magnet > 0, G.prevDist);
   let flew = false;
   for (const c of got) {
     G.coins++;
@@ -898,7 +1173,7 @@ function updatePlay(dt) {
     if (flyCoin(c)) flew = true;
   }
   if (got.length && !flew) ui.coinPop();
-  if (got.length) progression.track('coin', got.length);
+  if (got.length) progression.track('coin', got.length * (G.mod === 'coins2' ? 2 : 1));
   updatePowerups(dt);
   updateSurge(dt);
 
@@ -929,9 +1204,17 @@ function updatePlay(dt) {
 
 function updateMenu(dt) {
   G.time += dt;
+  // the menu may sit open past midnight: refresh today's challenge and the free mission skip
+  G.dayT = (G.dayT || 0) + dt;
+  if (G.dayT > 2 && document.body.dataset.screen === 'menu') {
+    G.dayT = 0;
+    const d = dayKey();
+    if (G.menuDay && d !== G.menuDay) { dailyUI.refresh(); progression.menu(); }
+    G.menuDay = d;
+  }
   stepWorld(dt, 9);
   player.update(dt, { dist: G.dist, speed: 9, spawner, power: G.power });
-  coins.update(dt, G.time, G.dist, 99, 0, false);
+  coins.update(dt, G.time, G.dist, player.x, player.y, false, G.dist, false);
   emitAmbient(dt);
   G.camBlend = Math.max(0, G.camBlend - dt / 0.6);
 }
@@ -940,17 +1223,61 @@ function updateDying(dt, raw) {
   G.deathT += raw;
   G.timeScale = Math.min(1, 0.3 + G.deathT * 0.9);
   player.update(dt, { dist: G.dist, speed: 0, spawner, power: G.power });
-  coins.update(dt, G.time, G.dist, 99, 0, false);
+  coins.update(dt, G.time, G.dist, player.x, player.y, false, G.dist, false);
   if (G.deathT > REVIVE.delay) offerRevive(); // declining or letting the countdown run out ends the run
 }
 
 let last = performance.now();
 let idleFrames = 0;
+
+let lastInput = performance.now();
+for (const t of ['pointerdown', 'keydown', 'wheel', 'touchstart']) {
+  window.addEventListener(t, () => { lastInput = performance.now(); }, { capture: true, passive: true });
+}
+
+// Phones may take the GPU back (backgrounded tab, driver reset): pause, say so, and rebuild when it is returned.
+// While the notice is up nothing behind it takes input (a key could otherwise resume the frozen run).
+let glLost = false, bootFailed = false, focusBeforeLost = null;
+const blockBehind = (on) => { for (const el of document.querySelectorAll('#app > *')) if (el.id !== 'gl-lost') el.inert = on; };
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault(); // lets the browser hand the context back
+  glLost = true;
+  focusBeforeLost = document.activeElement;
+  if (G.state === 'play') pause();
+  const inRun = G.state === 'pause' || G.state === 'dying' || G.state === 'revive';
+  $('gl-lost-note').textContent = inRun ? '重新載入會結束這一局，之前存好的紀錄和金幣都還在。' : '存好的紀錄和金幣都還在。';
+  $('gl-lost').hidden = false;
+  blockBehind(true);
+  setTimeout(() => $('btn-reload').focus({ preventScroll: true }), 60); // after pause() has focused 繼續
+});
+canvas.addEventListener('webglcontextrestored', () => {
+  if (bootFailed) { location.reload(); return; } // lost while loading: start over (the files are cached by now)
+  glLost = false;
+  $('gl-lost').hidden = true;
+  blockBehind(false);
+  buildEnvironment();
+  applyQuality(); // render targets and the shadow map are rebuilt at the current size
+  idleFrames = 0;
+  const back = focusBeforeLost;
+  focusBeforeLost = null;
+  setTimeout(() => {
+    const shown = (el) => el && el.isConnected && el !== document.body && !el.disabled && el.getClientRects().length > 0;
+    const name = document.body.dataset.screen, screen = $(name);
+    const main = { pause: 'btn-resume', over: 'btn-retry', menu: 'btn-play', revive: $('btn-revive').disabled ? 'btn-giveup' : 'btn-revive' }[name];
+    const el = shown(back) && screen && screen.contains(back) ? back : main && $(main);
+    if (shown(el)) el.focus({ preventScroll: true });
+  }, 30);
+});
+$('btn-reload').addEventListener('click', () => location.reload());
+
 function frame(now) {
   requestAnimationFrame(frame);
-  // The menu backdrop runs at ~30 fps; still screens (pause, game over, revive) stop rendering after a few frames.
-  if (G.state === 'menu' && now - last < 30) return;
-  if (G.state === 'pause' || G.state === 'over' || G.state === 'revive') {
+  if (glLost) { last = now; return; }
+  // The menu backdrop runs at ~30 fps, play at most ~95 fps; still screens (pause, game over, revive, a card over
+  // the menu) stop rendering after a few frames.
+  // a menu nobody has touched for 40 s idles at ~12 fps (laptops left open stay cool); any input brings it back
+  if (now - last < (G.state === 'menu' ? (now - lastInput > 40000 ? 80 : 30) : 8.6)) return;
+  if (G.state === 'pause' || G.state === 'over' || G.state === 'revive' || (G.state === 'menu' && OVERLAYS.has(document.body.dataset.screen))) {
     if (++idleFrames > 3 && G.state !== 'revive') { last = now; return; }
   } else idleFrames = 0;
   const raw = Math.min(0.05, (now - last) / 1000);
@@ -977,13 +1304,18 @@ function frame(now) {
     applyLook();
     updateCamera(dt, raw);
     player.faceCamera(camera);
+    // R3: particle sizes follow the live FOV (it widens up to +26 degrees with speed / frenzy / jetpack)
+    fx.setScale((window.innerHeight * renderer.getPixelRatio()) / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))),
+      window.innerHeight * renderer.getPixelRatio());
     updateDrone(dt, now / 1000);
   }
   G.flash = Math.max(0, G.flash - raw * 2.2);
   updateFeel(raw, now / 1000);
   const u = finalPass.uniforms;
   u.uFlash.value = G.flash;
-  u.uTime.value = now / 1000;
+  u.uTime.value = (now / 1000) % 600;
+  u.uStreak.value = FXP.streak;
+  u.uStreakRate.value = FXP.streakRate;
   const fast = G.state === 'play' ? 0.15 + 0.55 * C.clamp((G.speed - 20) / 15, 0, 1) : 0;
   const boost = G.state === 'play' && ((G.power.sneakers > 0 && !player.onGround) || G.power.jetpack > 0) ? 0.7 : 0;
   const frenzy = G.state === 'play' && G.fever > 0 ? 1 : 0;
@@ -998,7 +1330,9 @@ const KEYS = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   ArrowUp: 'jump', KeyW: 'jump', Space: 'jump', ArrowDown: 'roll', KeyS: 'roll',
 };
+const OVERLAYS = new Set(['settings', 'board', 'shop', 'help', 'name']);
 window.addEventListener('keydown', (e) => {
+  if (glLost || OVERLAYS.has(document.body.dataset.screen)) return; // their own handlers take the keys
   if (G.state === 'play') {
     const a = KEYS[e.code];
     if (a) { e.preventDefault(); if (!e.repeat) player.input(a); }
@@ -1010,30 +1344,35 @@ window.addEventListener('keydown', (e) => {
     revive.key(e);
   } else if (G.state === 'menu' && (e.code === 'Enter' || e.code === 'Space') && document.activeElement?.tagName !== 'BUTTON') {
     e.preventDefault();
-    startRun();
+    play();
   }
 });
 
-let swipe = null;
+const swipes = new Map(); // pointerId -> { x, y, done, onRush }: one per finger
 const touchLayer = document.getElementById('touch');
 const startSwipe = (e, onRush = false) => {
   if (G.state !== 'play') return;
-  swipe = { x: e.clientX, y: e.clientY, id: e.pointerId, done: false, onRush };
+  swipes.set(e.pointerId, { x: e.clientX, y: e.clientY, done: false, onRush });
 };
 touchLayer.addEventListener('pointerdown', (e) => startSwipe(e));
-// swipes may start on the RUSH button too; a tap without movement still fires RUSH (click)
+// swipes may start on the RUSH button too; a touch that doesn't become a swipe fires RUSH on pointer-up
 document.getElementById('btn-rush').addEventListener('pointerdown', (e) => startSwipe(e, true));
 window.addEventListener('pointermove', (e) => {
-  if (!swipe || swipe.done || e.pointerId !== swipe.id || G.state !== 'play') return;
+  const swipe = swipes.get(e.pointerId);
+  if (!swipe || swipe.done || G.state !== 'play') return;
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
   const th = Math.max(22, Math.min(window.innerWidth, window.innerHeight) * 0.045);
   if (Math.hypot(dx, dy) < th) return;
   swipe.done = true;
-  if (swipe.onRush) ui.suppressRush = true;
   player.input(Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : (dy > 0 ? 'roll' : 'jump'));
 });
-window.addEventListener('pointerup', () => { swipe = null; });
-window.addEventListener('pointercancel', () => { swipe = null; });
+window.addEventListener('pointerup', (e) => {
+  // a touch that started on the RUSH button and never became a swipe is a tap on it
+  const swipe = swipes.get(e.pointerId);
+  if (swipe && swipe.onRush && !swipe.done && G.state === 'play') ui.rushTap();
+  swipes.delete(e.pointerId);
+});
+window.addEventListener('pointercancel', (e) => { swipes.delete(e.pointerId); });
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     pause();
@@ -1054,13 +1393,17 @@ async function boot() {
   audio.onProgress = (p) => { musicP = p; show(); };
   audio.preload();
   const fonts = Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
-  await Promise.all([fonts, loadImages((p) => { artP = p; show(); }), audio.ready]);
+  // music is a nice-to-have: never let a slow or failed download keep the player on the loading screen
+  const audioReady = Promise.race([Promise.resolve(audio.ready).catch(() => {}), new Promise((r) => setTimeout(r, 15000))])
+    .then(() => { if (audio.tracksPending) audio.tracksPending = false; });
+  await Promise.all([fonts, loadImages((p) => { artP = p; show(); }), audioReady]);
   const mats = buildSharedMaterials();
   world = new World(scene, worldRoot);
   coins = new Coins(worldRoot);
   spawner = new Spawner(worldRoot, mats, coins);
   player = new Player(scene);
   fx = new FX(worldRoot);
+  markers = new DistanceMarkers(worldRoot);
   drone = new Drone(mats);
   scene.add(drone.group);
   resize();
@@ -1072,6 +1415,9 @@ async function boot() {
   updateCamera(0.016, 0.016);
   world.prewarm(true, 300);
   renderer.compile(scene, camera);
+  for (const f of Object.values(player.frames)) for (const t of [].concat(f)) if (t && t.isTexture) renderer.initTexture(t);
+  for (const m of mats.trainMats) if (m.map) renderer.initTexture(m.map);
+  applyQuality();
   composer.render();
   world.prewarm(false);
   spawner.reset(false);
@@ -1082,9 +1428,12 @@ async function boot() {
   G.state = 'menu';
   G.camBlend = 0;
   ui.show('menu');
+  if (progression.runsPlayed() === 0) store.set('news', NEWS_ALL); // brand-new players have nothing to compare with
+  showChallenge();
+  flushPending();
   requestAnimationFrame(frame);
-  if (location.hash === '#debug') window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression };
-  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer });
+  if (location.hash === '#debug' || new URLSearchParams(location.search).has('debug')) window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression };
+  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu, scene });
   // Browsers grant audio on pointerup / touchend / click / keydown (not touch pointerdown):
   // keep listening until the context is really running.
   const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
@@ -1100,4 +1449,7 @@ async function boot() {
   for (const t of GESTURES) window.addEventListener(t, firstGesture, true);
 }
 
-boot();
+boot().catch((err) => {
+  if (!glLost && !renderer.getContext().isContextLost()) throw err;
+  bootFailed = true; // the GPU went away mid-load: the notice is (or is about to be) up; its restore starts over
+});

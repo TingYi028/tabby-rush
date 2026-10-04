@@ -85,10 +85,11 @@ export class ReviveOverlay {
     else if (!yes) this.h.decline();
   }
 
-  /** Enter / Space = revive (or move on when it can't be afforded), Escape = give up. */
+  /** Enter = revive (or move on when it can't be afforded), Escape = give up. Space (= jump) is ignored. */
   key(e) {
     if (e.code === 'Escape') { e.preventDefault(); this.choose(false); }
-    else if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') {
+    else if (e.code === 'Space') e.preventDefault();
+    else if (e.code === 'Enter' || e.code === 'NumpadEnter') {
       e.preventDefault();
       if (!e.repeat) this.choose(this.ok);
     }

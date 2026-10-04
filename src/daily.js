@@ -61,7 +61,11 @@ let mem = { day: 0, best: 0, last: 0, streak: 0 };
 function load() {
   const s = store.get('daily', mem);
   const n = (v) => (Number.isFinite(v) ? v : 0);
-  return s && typeof s === 'object' ? { day: n(s.day), best: n(s.best), last: n(s.last), streak: n(s.streak) } : { ...mem };
+  const d = s && typeof s === 'object' ? { day: n(s.day), best: n(s.best), last: n(s.last), streak: n(s.streak) } : { ...mem };
+  // storage that can be read but not written (quota full) would hand back stale data: trust the newer session copy
+  if (mem.last > d.last) { d.last = mem.last; d.streak = mem.streak; }
+  if (mem.day > d.day || (mem.day === d.day && mem.best > d.best)) { d.day = mem.day; d.best = mem.best; }
+  return d;
 }
 function save(s) {
   mem = s;

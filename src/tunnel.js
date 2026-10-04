@@ -166,7 +166,7 @@ export class TunnelShell {
 
     const sign = new THREE.Mesh(new THREE.PlaneGeometry(7.2, 1.8),
       new THREE.MeshBasicMaterial({ map: makeTexture(signCanvas()) }));
-    sign.position.set(0, TUNNEL_CROWN + 1.85, PD + 0.03);
+    sign.position.set(0, TUNNEL_CROWN + 1.85, PD + 0.06);
 
     const hole = new THREE.ShapeGeometry(new THREE.Shape(profile()));
     // from outside the interior reads as a dark mouth; fades away as the camera closes in
@@ -190,11 +190,13 @@ export class TunnelShell {
     if (s0 >= 0) this.group.position.z = -s0;
   }
 
-  /** `camS` = the camera's track position. */
-  update(camS) {
+  /** `camS` = the camera's track position; `fogFar` fades the (fog-free) mouth and lamps in from the haze. */
+  update(camS, fogFar = 1e9) {
     if (this.s0 < 0) return;
     const toEntry = this.s0 - camS, toExit = this.s0 + this.len - camS;
-    const cu = 0.9 * THREE.MathUtils.smoothstep(toEntry, 6, 50);
+    const haze = 1 - THREE.MathUtils.smoothstep(toEntry, fogFar - 90, fogFar - 10);
+    const cu = 0.9 * THREE.MathUtils.smoothstep(toEntry, 6, 50) * haze;
+    if (haze !== this.haze) { this.haze = haze; this.lights.material.color.setRGB(2.4 * haze, 1.45 * haze, 0.6 * haze); }
     this.curtain.material.opacity = cu;
     this.curtain.visible = cu > 0.003;
     const gl = toExit > 0 ? 0.9 * THREE.MathUtils.smoothstep(toExit, 6, 42) : 0;

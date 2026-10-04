@@ -198,6 +198,15 @@ export function powerTime(type) {
   return (C.POWER_TIME[type] || 0) + UPGRADE_STEP * (save ? save.upg[type] || 0 : 0);
 }
 
+/** Finished runs on this device (the first few get the in-run tutorial hints). */
+export function runsPlayed() { return save ? save.stats.runs : 0; }
+
+/** Write the save now (coins earned or spent outside the normal run end: daily reward, revive). */
+export function saveNow() { persist(); }
+
+/** Longest run so far in metres (the best-distance marker on the track). */
+export function bestDist() { return save ? save.stats.bestDist : 0; }
+
 /** Chance (0..1) to start a run with a shield. */
 export function shieldChance() { return SHOP.shield.chance[save ? save.upg.shield : 0]; }
 
@@ -307,6 +316,7 @@ export function skip(i) {
 /** New run: reset the run counters and roll the start-with-shield upgrade. */
 export function startRun(game) {
   if (!save) return;
+  if (view) view.clearToasts(); // last run's leftover banners would otherwise play over this one
   Object.assign(run, { active: true, c: zeroCounters(), fresh: [], stumbled: false, allToast: false });
   const lv = save.upg.shield;
   if (lv > 0 && Math.random() < SHOP.shield.chance[lv]) {
@@ -382,13 +392,14 @@ export function endRun(game) {
     earned: nat(game.coins), bank: nat(game.bank), slots: before, levelUp: lvl,
     bonus: multBonus(), lvl: save.missions.lvl,
   };
-  if (view) view.renderGameOver(out);
+  if (view) { view.clearToasts(); view.renderGameOver(out); } // the card shows the results; no banners over it
   return out;
 }
 
 /** Back on the main menu (also after quitting a run): commit, settle and refresh the mission cards. */
 export function menu() {
   if (!save) return;
+  if (view) view.clearToasts();
   commit();
   const lvl = settle();
   persist();

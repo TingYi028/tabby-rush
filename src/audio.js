@@ -32,22 +32,24 @@ function bodyRange(buf) {
   return [a * win, (b + 1) * win];
 }
 
-/** Loop the body of a decoded track with an equal-power crossfaded seam. */
-function seamless(ctx, buf, fade = 2) {
+/**
+ * Make the body of a decoded track loop seamlessly, in place: the samples just past the loop end are
+ * equal-power crossfaded into the loop head, and the loop points are returned. No second copy of the
+ * (large, ~40 MB per channel-minute at 48 kHz) buffer is made.
+ */
+function seamless(buf, fade = 2) {
   const [start, end] = bodyRange(buf);
   const L = end - start;
   const X = Math.min(Math.floor(fade * buf.sampleRate), Math.floor(L / 4));
   const len = L - X;
-  const out = ctx.createBuffer(buf.numberOfChannels, len, buf.sampleRate);
   for (let ch = 0; ch < buf.numberOfChannels; ch++) {
-    const a = buf.getChannelData(ch).subarray(start, end), o = out.getChannelData(ch);
-    o.set(a.subarray(0, len));
+    const d = buf.getChannelData(ch);
     for (let i = 0; i < X; i++) {
       const t = i / X;
-      o[i] = a[i] * Math.sin(t * Math.PI / 2) + a[len + i] * Math.cos(t * Math.PI / 2);
+      d[start + i] = d[start + i] * Math.sin(t * Math.PI / 2) + d[start + len + i] * Math.cos(t * Math.PI / 2);
     }
   }
-  return out;
+  return { buffer: buf, start: start / buf.sampleRate, end: (start + len) / buf.sampleRate };
 }
 
 export class AudioFX {
@@ -60,6 +62,16 @@ export class AudioFX {
     this.lastCoin = 0;
     this.mode = null;
     this.trackSrc = null;
+    this.vol = { music: 1, sfx: 1 };
+  }
+
+  /** Player volume settings 0..1 (music bus base 0.7, SFX bus base 0.9). */
+  setVolumes(music, sfx) {
+    this.vol = { music, sfx };
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.musicBus.gain.setTargetAtTime(0.7 * music, t, 0.05);
+    this.sfx.gain.setTargetAtTime(0.9 * sfx, t, 0.05);
   }
 
   /** Create the (suspended) context and start downloading/decoding at page load, before any tap. */
@@ -67,7 +79,8 @@ export class AudioFX {
     if (this.ctx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    this.ctx = new AC();
+    // 32 kHz keeps everything a 96 kbps soundtrack carries and decodes the music into a third less memory
+    try { this.ctx = new AC({ sampleRate: 32000 }); } catch { this.ctx = new AC(); }
     const comp = this.ctx.createDynamicsCompressor();
     comp.threshold.value = -14;
     comp.ratio.value = 3;
@@ -75,10 +88,10 @@ export class AudioFX {
     this.master.gain.value = this.muted ? 0 : 1;
     this.master.connect(comp).connect(this.ctx.destination);
     this.sfx = this.ctx.createGain();
-    this.sfx.gain.value = 0.9;
+    this.sfx.gain.value = 0.9 * this.vol.sfx;
     this.sfx.connect(this.master);
     this.musicBus = this.ctx.createGain();
-    this.musicBus.gain.value = 0.7;
+    this.musicBus.gain.value = 0.7 * this.vol.music;
     this.buildLayers();
     this.groove = new Groove(this.ctx, this.musicBus);
     this.ready = this.loadAll();
@@ -186,7 +199,7 @@ export class AudioFX {
     report();
     await Promise.all(keys.map(async (k) => {
       const b = await this.fetchBuffer(`assets/audio/${list[k]}`, (p) => { prog[k] = p * 0.9; report(); });
-      if (b) this.tracks[k] = seamless(this.ctx, b);
+      try { if (b) this.tracks[k] = seamless(b); } catch { /* keep the synth fallback for this one */ }
       prog[k] = 1;
       report();
     }));
@@ -244,12 +257,14 @@ export class AudioFX {
     if (track) {
       this.groove.stop(true);
       const src = this.ctx.createBufferSource(), g = this.ctx.createGain(), t = this.ctx.currentTime;
-      src.buffer = track;
+      src.buffer = track.buffer;
       src.loop = true;
+      src.loopStart = track.start;
+      src.loopEnd = track.end;
       g.gain.setValueAtTime(0, t);
       g.gain.linearRampToValueAtTime(mode === 'menu' && !this.tracks.menu ? 0.45 : 0.85, t + 0.8);
       src.connect(g).connect(this.musicBus);
-      src.start();
+      src.start(t, track.start);
       this.trackSrc = { src, g };
     } else {
       this.groove.start(mode);

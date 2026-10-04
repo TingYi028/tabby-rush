@@ -152,7 +152,7 @@ export class World {
       const camS = dist - camera.position.z, s1 = s0 + this.tunnel.len;   // the camera trails the hero (z = 0) by its z
       dark = smooth(camS, s0 - 14, s0 + 14) * (1 - smooth(camS, s1 - 6, s1 + 12));
       shelter = smooth(camS, s0 - 30, s0 + 2) * (1 - smooth(camS, s1 - 26, s1 - 2));
-      this.tunnel.update(camS);
+      this.tunnel.update(camS, this.scene.fog.far);
     }
     if (dark !== this.dark || shelter !== this.shelter) { this.dark = dark; this.shelter = shelter; this.dirty = true; }
     if (this.dirty) { this.dirty = false; this.applyLook(); }
@@ -343,7 +343,6 @@ export class World {
       cope.castShadow = true;
       const out = new THREE.Mesh(new THREE.PlaneGeometry(80, len).rotateX(-Math.PI / 2), swMat);
       out.position.set(sd * (C.WALL_X + 0.7 + 40), 0.02, zc);
-      out.receiveShadow = true;
       T.add(wall, cope, out);
     }
 
@@ -380,7 +379,23 @@ export class World {
       for (let i = 0; i < count; i++) wires.push(pbox(0.06, 0.62, 0.06, C.laneX(l), 7.77, z0 - i * P - 4, '#3a3633'));
     }
     const vmat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.15 });
-    const steelMesh = new THREE.Mesh(mergeGeometries(steel, false), vmat);
+    // gantry steel dissolves only within ~3 m of the lens: during a jetpack climb / descent the camera passes the
+    // beam height, and a beam crossing the near plane would otherwise black out the view for a frame or two
+    const smat = vmat.clone();
+    smat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', `#include <common>
+varying float vViewZ;`)
+        .replace('#include <project_vertex>', `#include <project_vertex>
+vViewZ = -mvPosition.z;`);
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', `#include <common>
+varying float vViewZ;`)
+        .replace('void main() {', `void main() {
+          float keepS = smoothstep(0.6, 3.2, vViewZ);
+          if (fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453) > keepS) discard;`);
+    };
+    const steelMesh = new THREE.Mesh(mergeGeometries(steel, false), smat);
     steelMesh.castShadow = steelMesh.receiveShadow = true;
     const lampMesh = new THREE.Mesh(mergeGeometries(lamps, false), vmat);
     lampMesh.castShadow = lampMesh.receiveShadow = true;
@@ -417,7 +432,8 @@ export class World {
         new THREE.MeshStandardMaterial({ color: FACADE_TINT[i - 1], roughness: 0.95 }),
       ];
       const im = new THREE.InstancedMesh(box, mats, 160);
-      im.castShadow = im.receiveShadow = true;
+      im.castShadow = true;
+      im.receiveShadow = false;
       im.frustumCulled = false;
       im.count = 0;
       this.root.add(im);
@@ -448,7 +464,7 @@ export class World {
     this.frames = new THREE.InstancedMesh(mergeGeometries(frame, false),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }), 40);
     this.frames.castShadow = true;
-    const boardGeo = new THREE.PlaneGeometry(bw, bh).translate(0, 3.0 + bh / 2, 0);
+    const boardGeo = new THREE.PlaneGeometry(bw, bh).translate(0, 3.0 + bh / 2, 0.04);
     this.boards = [0, 1].map((k) => new THREE.InstancedMesh(boardGeo,
       new THREE.MeshStandardMaterial({ map: makeTexture(billboardCanvas(k)), roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.12,
         emissiveMap: null }), 30));
@@ -542,7 +558,7 @@ export class World {
         m.compose(p.set(b.x, 0, b.zc), q, s.set(b.depth, b.H, b.Lz));
         t.im.setMatrixAt(counts[b.type], m);
         t.im.setColorAt(counts[b.type]++, col.setScalar(b.tint));
-        m.compose(p.set(b.x, b.H, b.zc), q, s.set(b.depth + 0.35, 0.5, b.Lz + 0.35));
+        m.compose(p.set(b.x, b.H + (np % 2) * 0.012, b.zc), q, s.set(b.depth + 0.35 + (np % 3) * 0.014, 0.5, b.Lz + 0.35));
         this.parapets.setMatrixAt(np, m);
         this.parapets.setColorAt(np++, col.setScalar(b.tint));
         if (b.tower && b.Lz > 5) {
@@ -584,7 +600,8 @@ export class World {
       c.position.x += dt * 4;
       if (c.position.x > 700) c.position.x = -700;
     }
-    this.sun.target.position.set(camera.position.x, 0, -22);
+    const texel = 68 / this.sun.shadow.mapSize.x;
+    this.sun.target.position.set(Math.round(camera.position.x / texel) * texel, 0, -22);
     this.sun.position.copy(this.sun.target.position).add(this.look.sunDir);
     this.updateAmbience(dt, dist, camera, speed);
     let dirty = false;

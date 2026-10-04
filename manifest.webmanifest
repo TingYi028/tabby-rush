@@ -1,0 +1,16 @@
+{
+  "name": "Tabby Rush 虎斑衝刺",
+  "short_name": "Tabby Rush",
+  "description": "穿上虎斑貓裝，在城市鐵道上狂奔！免下載，打開就能玩。",
+  "lang": "zh-Hant",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#5fb6f2",
+  "theme_color": "#ff8a1f",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

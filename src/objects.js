@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as C from './config.js';
+import { FXP } from './settings.js';
 import { images, makeTexture } from './assets.js';
 import {
   TRAIN_VARIANTS, TRAIN_UV, PROP_UV, trainAtlasCanvas, propsAtlasCanvas, softDotCanvas, makeCanvas,
@@ -91,7 +92,7 @@ function buildCarGeometry() {
   const ls = [];
   for (const x of [-0.64, 0.64]) {
     const c = new THREE.CircleGeometry(0.13, 18);
-    c.translate(x, C.BODY_Y0 + 0.28 * C.BODY_H, L / 2 + 0.015);
+    c.translate(x, C.BODY_Y0 + 0.28 * C.BODY_H, L / 2 + 0.04);
     ls.push(c);
   }
   lightsGeo = mergeGeometries(ls, false);
@@ -104,6 +105,7 @@ export class Train {
     this.group = new THREE.Group();
     this.cars = [];
     this.lightOn = new THREE.MeshBasicMaterial({ color: new THREE.Color(5, 4.4, 3) });
+    this.seed = Math.random() * 100;
     this.lightOff = new THREE.MeshBasicMaterial({ color: 0xf3ead0 });
     this.lights = new THREE.Mesh(lightsGeo, this.lightOff);
     this.glow = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -144,7 +146,9 @@ export class Train {
       return;
     }
     this.danger = d;
-    const flicker = 1 - d * (0.16 * (0.5 + 0.5 * Math.sin(t * 43)) + (Math.random() < 0.18 * d ? 0.3 : 0));
+    // dips on a 10 Hz grid (frame-rate independent); calm mode keeps a steady swell
+    const cell = Math.floor(t * 10), dip = !FXP.calm && Math.abs(Math.sin(cell * 12.9898 + this.seed) * 43758.5453) % 1 < 0.18 * d;
+    const flicker = 1 - d * ((FXP.calm ? 0.08 : 0.16) * (0.5 + 0.5 * Math.sin(t * (FXP.calm ? 9 : 43))) + (dip ? 0.3 : 0));
     const w = (4.6 + 2.9 * d) * (0.93 + 0.07 * flicker);
     this.glow.scale.set(w, w * (2.6 / 4.6), 1);
     this.glow.material.opacity = flicker;
@@ -434,7 +438,7 @@ export class Drone {
     this.group.visible = false;
   }
   update(t) {
-    const on = Math.floor(t * 8) % 2 === 0;
+    const on = FXP.calm ? true : Math.floor(t * 5) % 2 === 0;
     this.red.color.setRGB(on ? 6 : 0.6, on ? 0.5 : 0.1, on ? 0.4 : 0.1);
     this.blue.color.setRGB(on ? 0.1 : 0.3, on ? 0.2 : 0.9, on ? 0.6 : 6);
     for (const r of this.rotors) r.rotation.y = t * 40;
@@ -445,7 +449,7 @@ export class Drone {
 
 export class Coins {
   constructor(parent) {
-    this.cap = 320;
+    this.cap = 640;
     const rimGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.1, 30, 1, true);
     rimGeo.rotateX(Math.PI / 2);
     const front = new THREE.CircleGeometry(0.42, 36);
@@ -483,21 +487,28 @@ export class Coins {
   }
   clear() { this.list.length = 0; }
   /** Returns the collected coins' positions (track coordinates) for effects. */
-  update(dt, t, dist, px, py, magnet) {
+  /**
+   * `prevDist`: the hero's distance last frame (pickups cover the whole frame's travel, so low frame rates
+   * don't skip coins); `collect` false (menu, crash) neither collects nor pulls magnetised coins.
+   */
+  update(dt, t, dist, px, py, magnet, prevDist = dist, collect = true) {
     const got = [];
     const L = this.list;
     for (let i = L.length - 1; i >= 0; i--) {
       const c = L[i];
       if (c.s < dist - 12) { L[i] = L[L.length - 1]; L.pop(); continue; }
       const ahead = c.s - dist;
-      if (magnet && ahead < 16 && ahead > -1.5) c.mag = true;
-      if (c.mag) {
+      if (magnet && ahead < 16 && ahead > -1.5 && !c.mag) { c.mag = true; c.off = ahead; }
+      if (c.mag && collect) {
+        // pulled in relative to the hero (an absolute chase would trail him by speed/14 m forever)
         const k = 1 - Math.exp(-14 * dt);
         c.x += (px - c.x) * k;
         c.y += (py + 1.0 - c.y) * k;
-        c.s += (dist - c.s) * k;
+        c.off *= 1 - k;
+        c.s = dist + c.off;
       }
-      if (Math.abs(c.s - dist) < 0.9 && Math.abs(c.x - px) < 0.95 && Math.abs(c.y - (py + 0.9)) < 1.35) {
+      if (!collect) continue;
+      if (c.s > prevDist - 0.9 && c.s < dist + 0.9 && Math.abs(c.x - px) < 0.95 && Math.abs(c.y - (py + 0.9)) < 1.35) {
         got.push(c);
         L[i] = L[L.length - 1];
         L.pop();
@@ -523,6 +534,7 @@ export class Coins {
 
 export const POWER_TYPES = ['magnet', 'sneakers', 'x2', 'shield', 'jetpack'];
 const POWER_GLOW = { magnet: 0xff6a5a, sneakers: 0x8cff5a, x2: 0xffd23f, shield: 0x7fd8ff, jetpack: 0xffa040 };
+const ICON_TEX = {}; // shared by every pooled power-up
 
 export class PowerUp {
   constructor(mats) {
@@ -534,7 +546,7 @@ export class PowerUp {
     this.icon = new THREE.Sprite(new THREE.SpriteMaterial({ transparent: true, depthWrite: false }));
     this.icon.scale.set(1.35, 1.35, 1);
     this.group.add(this.glow, this.icon);
-    this.texCache = {};
+    this.texCache = ICON_TEX;
   }
   setType(type) {
     this.type = type;

@@ -17,16 +17,28 @@ export const TUNNEL = {
 };
 
 const starts = [];   // tunnel entrances for this run, ascending
+let rnd = Math.random;
 
-/** New run: a fresh, randomly jittered tunnel schedule. */
+/**
+ * New run: a fresh, randomly jittered tunnel schedule. It draws from its own generator, seeded once here from the
+ * caller's Math.random (the daily seed inside spawner.seeded), so planning ahead from the per-frame zone check never
+ * consumes or depends on the track generator's numbers: a daily track is the same for everyone, all the way.
+ */
 export function resetDirector() {
   starts.length = 0;
+  let a = (Math.random() * 4294967296) >>> 0;
+  rnd = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 function plan(upTo) {
   while (!starts.length || starts[starts.length - 1] < upTo) {
     const n = starts.length;
-    starts.push(n ? starts[n - 1] + TUNNEL.every + C.rand(-TUNNEL.jitter, TUNNEL.jitter) : TUNNEL.first + C.rand(0, 40));
+    starts.push(n ? starts[n - 1] + TUNNEL.every + (rnd() * 2 - 1) * TUNNEL.jitter : TUNNEL.first + rnd() * 40);
   }
 }
 
@@ -90,10 +102,14 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
   }
 
   if (spawn.barriers > 0 && !breather && k > 3) {
+    const tunnelRow = inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6);
     for (let L = 0; L < 3; L++) {
-      if (content[L] !== 'empty' || L === sp.safe || (sp.reserve && sp.reserve.lane === L)) continue;
+      if (content[L] !== 'empty' || L === sp.safe || sp.reserved(sp.reserve, L)) continue;
       // only ~0.2 eligible lanes per row late in a run, so this adds about `barriers` × the base ~0.47 barriers per row
-      if (Math.random() < spawn.barriers * 2.6) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+      if (Math.random() < spawn.barriers * 2.6) {
+        const kind = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+        content[L] = sp.padsOnly ? (tunnelRow ? 'empty' : 'pad') : kind;
+      }
     }
   }
 

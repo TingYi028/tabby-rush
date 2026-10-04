@@ -269,7 +269,7 @@ export const setPieces = {
       trains.forEach((tr, i) => {
         const gapBefore = i ? trains[i - 1].gap : 0;
         let from = -Infinity;
-        for (let n = 0; n < 2 && Math.random() < (n ? ROOF.bar2Chance : ROOF.barChance); n++) {
+        for (let n = 0; n < 2 && !this.padsOnly && Math.random() < (n ? ROOF.bar2Chance : ROOF.barChance); n++) {
           let kind = Math.random() < ROOF.hurdleShare ? 'hurdle' : 'overhead';
           let [a, b] = barWindow(kind, tr, gapBefore, tr.gap, v);
           if (Math.max(a, from) > b) {

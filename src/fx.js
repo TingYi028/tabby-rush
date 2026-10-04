@@ -2,19 +2,21 @@ import * as THREE from 'three';
 import { makeTexture } from './assets.js';
 import { softDotCanvas, starCanvas } from './textures.js';
 import { rand } from './config.js';
+import { FXP } from './settings.js';
 
 const VERT = /* glsl */`
 attribute float size;
 attribute float alpha;
 attribute vec3 pcolor;
 uniform float uScale;
+uniform float uMaxPx;
 varying float vAlpha;
 varying vec3 vColor;
 void main() {
   vAlpha = alpha;
   vColor = pcolor;
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
-  gl_PointSize = size * uScale / max(0.1, -mv.z);
+  gl_PointSize = min(size * uScale / max(0.1, -mv.z), uMaxPx); // nothing balloons as it passes the camera
   gl_Position = projectionMatrix * mv;
 }`;
 
@@ -32,6 +34,7 @@ void main() {
 class ParticleSystem {
   constructor(parent, max, texture, blending) {
     this.max = max;
+    this.gain = () => 1; // colour multiplier at emit time (additive sparkles follow the effects setting)
     this.cursor = 0;
     const geo = new THREE.BufferGeometry();
     this.pos = new Float32Array(max * 3);
@@ -52,7 +55,7 @@ class ParticleSystem {
     this.grav = new Float32Array(max);
     this.drag = new Float32Array(max);
     this.material = new THREE.ShaderMaterial({
-      uniforms: { uMap: { value: texture }, uScale: { value: 400 } },
+      uniforms: { uMap: { value: texture }, uScale: { value: 400 }, uMaxPx: { value: 160 } },
       vertexShader: VERT,
       fragmentShader: FRAG,
       transparent: true,
@@ -71,15 +74,19 @@ class ParticleSystem {
     const i3 = i * 3;
     this.pos[i3] = x; this.pos[i3 + 1] = y; this.pos[i3 + 2] = z;
     this.vel[i3] = vx; this.vel[i3 + 1] = vy; this.vel[i3 + 2] = vz;
-    this.col[i3] = color.r; this.col[i3 + 1] = color.g; this.col[i3 + 2] = color.b;
+    const g = this.gain();
+    this.col[i3] = color.r * g; this.col[i3 + 1] = color.g * g; this.col[i3 + 2] = color.b * g;
+    this.colDirty = true;
     this.life[i] = this.maxLife[i] = life;
     this.s0[i] = s0; this.s1[i] = s1; this.a0[i] = a0;
     this.grav[i] = grav; this.drag[i] = drag;
   }
 
   update(dt) {
+    let hi = 0;
     for (let i = 0; i < this.max; i++) {
       if (this.life[i] <= 0) { this.alpha[i] = 0; this.size[i] = 0; continue; }
+      hi = i + 1;
       this.life[i] -= dt;
       const t = 1 - Math.max(0, this.life[i]) / this.maxLife[i];
       const i3 = i * 3;
@@ -91,8 +98,18 @@ class ParticleSystem {
       this.size[i] = this.s0[i] + (this.s1[i] - this.s0[i]) * t;
       this.alpha[i] = this.a0[i] * (t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85);
     }
+    // upload only the slots that can be alive (plus the ones that died since last frame); colours only after emits
+    const n = Math.max(hi, this.lastHi || 0);
+    this.lastHi = hi;
+    this.geo.setDrawRange(0, hi);
+    if (!n) return;
     const a = this.geo.attributes;
-    a.position.needsUpdate = a.pcolor.needsUpdate = a.size.needsUpdate = a.alpha.needsUpdate = true;
+    for (const at of [a.position, a.size, a.alpha]) {
+      at.clearUpdateRanges();
+      at.addUpdateRange(0, n * at.itemSize);
+      at.needsUpdate = true;
+    }
+    if (this.colDirty) { this.colDirty = false; a.pcolor.needsUpdate = true; }
   }
 
   clear() { this.life.fill(0); }
@@ -114,19 +131,28 @@ export const FX_COLORS = COL;
 export class FX {
   constructor(worldRoot) {
     this.add = new ParticleSystem(worldRoot, 700, makeTexture(starCanvas()), THREE.AdditiveBlending);
+    this.add.gain = () => FXP.glow;
     this.soft = new ParticleSystem(worldRoot, 500, makeTexture(softDotCanvas()), THREE.NormalBlending);
     this.root = worldRoot;
   }
-  setScale(s) { this.add.material.uniforms.uScale.value = s; this.soft.material.uniforms.uScale.value = s; }
+  /** `s`: pixels per world unit at distance 1; `h`: drawing-buffer height (caps a particle at 16% of it). */
+  setScale(s, h = 1000) {
+    for (const p of [this.add, this.soft]) {
+      p.material.uniforms.uScale.value = s;
+      p.material.uniforms.uMaxPx.value = Math.max(24, h * 0.16);
+    }
+  }
   update(dt) { this.add.update(dt); this.soft.update(dt); }
   clear() { this.add.clear(); this.soft.clear(); }
 
   // All positions below are in world-root local space: (x, y, -s).
+  // Effect counts and sizes scale with the effects setting (FXP.particles: 0.45 low .. 1 high).
   coin(x, y, z) {
-    for (let i = 0; i < 9; i++) {
+    const n = Math.max(3, Math.round(8 * FXP.particles)), k = 0.6 + 0.4 * FXP.particles;
+    for (let i = 0; i < n; i++) {
       const a = rand(0, Math.PI * 2), sp = rand(2.5, 5.5);
-      this.add.emit(x, y, z, Math.cos(a) * sp, Math.sin(a) * sp + 1.5, rand(-1, 1), rand(0.28, 0.45), rand(0.55, 0.85), 0.05,
-        i % 3 ? COL.gold : COL.white, 1, 4, 3);
+      this.add.emit(x, y, z, Math.cos(a) * sp, Math.sin(a) * sp + 1.5, rand(-1, 1), rand(0.28, 0.45), rand(0.55, 0.85) * k, 0.05,
+        i % 3 ? COL.gold : COL.white, 0.6 + 0.4 * FXP.particles, 4, 3);
     }
   }
   dust(x, y, z, big = 1) {
@@ -142,6 +168,7 @@ export class FX {
     }
   }
   burst(x, y, z, color, n = 26, speed = 7) {
+    n = Math.max(4, Math.round(n * FXP.particles));
     for (let i = 0; i < n; i++) {
       const a = rand(0, Math.PI * 2), b = rand(-0.6, 1.2), sp = rand(speed * 0.5, speed);
       this.add.emit(x, y, z, Math.cos(a) * sp, b * sp * 0.6 + 2, Math.sin(a) * sp, rand(0.45, 0.8), rand(0.6, 1.1), 0.05,
@@ -156,6 +183,7 @@ export class FX {
     this.burst(x, y + 1.4, z, COL.yellow, 20, 8);
   }
   trail(x, y, z, color) {
+    if (Math.random() > FXP.particles) return;
     this.add.emit(x + rand(-0.3, 0.3), y + rand(0, 0.4), z + rand(-0.2, 0.2), rand(-0.4, 0.4), rand(-0.2, 0.6), rand(1, 3),
       rand(0.3, 0.5), rand(0.4, 0.7), 0.05, color, 0.9, 0, 1);
   }
