@@ -8,7 +8,8 @@ const $ = (id) => document.getElementById(id);
 /**
  * The "what's your name?" card (#name): shown once, the first time a run is started without a leaderboard name.
  * 開始 saves the typed name (an empty or refused one keeps the default) and starts the run; 先跳過 just starts.
- * The name can be changed later in 設定 or on the leaderboard card.
+ * The name can be changed later in 設定 or on the leaderboard card. A name saved here renames the seeded / past local
+ * rows too (leaderboard.js listens to the setting); a new player has no world row yet, so the first run carries it.
  */
 export class NameUI {
   constructor(ui, { click } = {}) {
@@ -42,6 +43,8 @@ export class NameUI {
     this.then = then;
     const input = $('name-input');
     input.value = '';
+    delete input.dataset.kept;
+    input.classList.remove('bad');
     input.placeholder = playerName();
     this.click();
     this.ui.show('name');

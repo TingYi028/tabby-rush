@@ -16,20 +16,20 @@ import { LaneArrows, ARROW_SPACING } from './objects.js';
  */
 
 export const SWERVE = {
-  after: 900,      // m: no swerving trains before this
+  after: 650,      // m: no swerving trains before this
   chance: 0.45,    // share of eligible oncoming-train bookings that swerve
   at: 45,          // m between the front and the hero when the swerve starts...
-  minTtc: 0.95,    // ...or this many seconds of closing time, whichever is further
-  warn: 1.0,       // s of arrows + horn before the swerve starts
+  minTtc: 1.2,     // ...or this many seconds of closing time, whichever is further
+  warn: 1.2,       // s of arrows + horn before the swerve starts
   dur: 0.5,        // s to cross into the next lane
   lean: 0.06,      // rad of yaw at mid-swerve (the nose leads, the tail lags)
 };
 
 export const ROOF = {
-  first: 1000,     // m: the first rooftop segment starts about here
-  every: 1100,     // m between segment starts
+  first: 800,      // m: the first rooftop segment starts about here
+  every: 800,      // m between segment starts
   rows: 6,         // segment length in rows
-  quiet: 180,      // m before a segment where no new oncoming train is booked (so it can't delay the segment)
+  quiet: 140,      // m before a segment where no new oncoming train is booked (so it can't delay the segment)
   gapMin: 5,       // m between consecutive trains in a lane; a normal jump covers ~9 m even at base speed
   gapMax: 8,
   slack: 14,       // every lane's last train ends within this many metres of the segment end
@@ -48,7 +48,7 @@ const rowOf = (s) => Math.floor((s - C.START_GAP) / C.SLOT);
 // spawner.js wave: 8-row cycle with the gate on row 5 (WAVE / GATE_ROW there)
 const WAVE_LEN = 8, GATE_ROW = 5;
 /** Run speed at track position s (same curve as main.js), with a boost-strip surge on top as the worst case. */
-const planSpeed = (s) => C.SURGE_SPEED * (C.BASE_SPEED + (C.MAX_SPEED - C.BASE_SPEED) * (1 - Math.exp(-s / C.SPEED_RAMP)));
+const planSpeed = (s) => C.SURGE_SPEED * C.speedAt(s);
 
 /**
  * Where a roof barrier of `kind` may stand on train `tr` (gap before / after it in metres, 0 = none) at speed v.

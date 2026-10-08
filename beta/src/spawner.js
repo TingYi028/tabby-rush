@@ -4,11 +4,15 @@ import { setPieces } from './setpieces.js';
 import { tuneRow } from './director.js';
 
 const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad, boost: BoostStrip };
-const POWER_WEIGHTS = [['magnet', 0.24], ['sneakers', 0.18], ['x2', 0.2], ['shield', 0.16], ['jetpack', 0.22]];
+const POWER_WEIGHTS = [['magnet', 0.3], ['sneakers', 0.17], ['x2', 0.25], ['shield', 0.2], ['jetpack', 0.08]];
+const JET_FIRST = 800, JET_GAP = 1500;  // m: no jetpack this early, nor this soon after the previous one
 
-function weightedPower() {
-  let r = Math.random();
-  for (const [t, w] of POWER_WEIGHTS) { if ((r -= w) < 0) return t; }
+/** A power-up type for track position s; the jetpack only when it is allowed there (weights renormalised). */
+function weightedPower(s, lastJet) {
+  const jetOk = s >= JET_FIRST && s - lastJet >= JET_GAP;
+  const list = jetOk ? POWER_WEIGHTS : POWER_WEIGHTS.filter(([t]) => t !== 'jetpack');
+  let r = Math.random() * list.reduce((a, [, w]) => a + w, 0);
+  for (const [t, w] of list) { if ((r -= w) < 0) return t; }
   return 'magnet';
 }
 
@@ -86,11 +90,14 @@ export class Spawner {
     this.reserve = null;
     this.resetSetPieces();
     this.lastMoving = -99;
-    this.nextPower = 5 + C.randi(0, 3);
+    this.nextPower = 8 + C.randi(0, 2);
+    this.lastJet = -1e9;
     this.lastBoost = -99;
     this.boostLane = -1;
     this.padRow = -9;     // last row that had spring pads, and their lanes (the next row avoids flat train fronts there)
     this.padLanes = [];
+    this.comboRow = -9;   // last gate-combo row and lane (the next row keeps that lane clear)
+    this.comboLane = -1;
     this.active = active;
   }
 
@@ -161,7 +168,7 @@ export class Spawner {
         o.s0 -= o.speed * dt;
         o.obj.group.position.z = -o.s0;
         if (o.swerve) this.swerveStep(o, dt, dist, events);
-        if (!o.honked && o.s0 - dist < 95) { o.honked = true; events.push({ type: 'horn', lane: o.lane }); }
+        if (!o.honked && o.s0 - dist < Math.max(95, 2.2 * (this.pace + o.speed))) { o.honked = true; events.push({ type: 'horn', lane: o.lane }); }
         if (!o.passed && o.s0 < dist) { o.passed = true; events.push({ type: 'pass', lane: o.lane }); }
       }
       if (o.s0 + o.len < dist - 16) {
@@ -181,12 +188,12 @@ export class Spawner {
     return events;
   }
 
-  /** Zig-zag coin trail in the sky for the jetpack. */
-  addSkyCoins(from, to) {
+  /** Zig-zag coin trail in the sky for the jetpack (`rnd`: the daily run passes a generator seeded by the pickup). */
+  addSkyCoins(from, to, rnd = Math.random) {
     let lane = 1, s = from;
     while (s < to) {
       for (let i = 0; i < 7 && s < to; i++, s += 2.6) this.coins.add(C.laneX(lane), C.JET_Y + 1, s);
-      lane = lane === 1 ? C.pick([0, 2]) : 1;
+      lane = lane === 1 ? (rnd() < 0.5 ? 0 : 2) : 1;
       s += 3;
     }
   }
@@ -212,22 +219,22 @@ export class Spawner {
     const k = this.k++;
     const s0 = C.START_GAP + k * C.SLOT;
     const wave = k % WAVE.length;
-    const gate = wave === GATE_ROW, breather = wave > GATE_ROW;
-    const diff = C.clamp(C.clamp(s0 / 3400, 0, 1) + WAVE[wave], 0, 1);
+    const gate = wave === GATE_ROW, breather = wave === 7 || (wave === 6 && s0 < 1500);
+    const diff = C.clamp(C.clamp(s0 / 2500, 0, 1) + (wave === 6 && !breather ? 0.1 : WAVE[wave]), 0, 1);
     const prevBlocked = this.blocked[k - 1] || [false, false, false];
     if (k > 3) this.blocked[k - 4] = undefined; // only the previous row is ever read
     if (this.setPieceRow(k, s0)) return; // rooftop segment rows (setpieces.js)
 
     const prevSafe = this.safe;
     // An oncoming train needs a clear lane next to an unchanging safe lane for the rows it sweeps through.
-    if (!this.reserve && s0 > 360 && k - this.lastMoving > 6 && Math.random() < 0.28 + 0.2 * diff) {
+    if (!this.reserve && s0 > 200 && k - this.lastMoving > 3 && Math.random() < 0.4 + 0.2 * diff) {
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k);
       if (cand.length) this.reserve = { lane: C.pick(cand), until: k + 6 };
     }
     this.planSwerve(k, s0, prevSafe);
     const R = this.reserve;
     let newSafe = prevSafe;
-    if (!R && k > 1 && Math.random() < 0.32) {
+    if (!R && k > 1 && Math.random() < 0.4) {
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k && !prevBlocked[l]);
       if (cand.length) newSafe = C.pick(cand);
     }
@@ -248,17 +255,21 @@ export class Spawner {
       }
       if (safeSet.has(L)) {
         if (gate && L === prevSafe) content[L] = wall ? (Math.random() < 0.5 ? 'hurdle' : 'overhead') : 'combo';
-        else if (prevSafe === newSafe && Math.random() < 0.16 + 0.2 * diff) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+        else if (prevSafe === newSafe && Math.random() < (s0 < 1500 ? 0.2 + 0.25 * diff : 0.24 + 0.3 * diff)) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
         continue;
       }
       const r = wall ? 0 : Math.random();
-      if (r < 0.34 + 0.3 * diff) {
-        content[L] = Math.random() < 0.38 ? 'rampTrain' : 'train';
-      } else if (r < 0.52 + 0.25 * diff) {
+      const mid = L === 1 && prevSafe !== 1 && newSafe !== 1 ? 0.15 : 0;
+      if (r < 0.44 + 0.32 * diff + mid) {
+        content[L] = Math.random() < (s0 < 2000 ? 0.36 : 0.28) ? 'rampTrain' : 'train';
+      } else if (r < 0.6 + 0.25 * diff) {
         content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
       } else if (k > 3 && Math.random() < 0.3) {
         content[L] = 'pad';
       }
+    }
+    if (this.comboRow === k - 1 && (content[this.comboLane] === 'hurdle' || content[this.comboLane] === 'overhead' || content[this.comboLane] === 'pad')) {
+      content[this.comboLane] = 'empty';
     }
     // Never surge straight into a flat train front: the row after a boost strip gets a ramp in that lane.
     if (this.lastBoost === k - 1 && content[this.boostLane] === 'train') content[this.boostLane] = 'rampTrain';
@@ -285,26 +296,30 @@ export class Spawner {
 
     tuneRow(this, k, s0, content, blocked, prevBlocked, breather); // zone theme + tunnel rules (director.js)
     this.blocked[k] = blocked;
+    const prevPadRow = this.padRow, prevPadLanes = this.padLanes;
     this.padRow = k;
     this.padLanes = [0, 1, 2].filter((L) => content[L] === 'pad');
 
     const info = [null, null, null];
     for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff);
+    const combo = content.indexOf('combo');
+    if (combo >= 0) { this.comboRow = k; this.comboLane = combo; }
     this.armSwerve(R, content, s0);
 
     if (breather) this.breatherCoins(content, R, newSafe, s0);
-    else this.placeCoins(content, info, blocked, newSafe, s0, k);
+    else this.placeCoins(content, info, blocked, newSafe, s0, k, { padRow: prevPadRow, padLanes: prevPadLanes });
 
     if (k >= this.nextPower - (breather ? 2 : 0)) {
       const lanes = [0, 1, 2].filter((l) => content[l] === 'empty' && !this.reserved(R, l));
       if (lanes.length) {
         const L = C.pick(lanes);
         const obj = this.get('power');
-        obj.setType(weightedPower());
+        obj.setType(weightedPower(s0 + 14, this.lastJet));
+        if (obj.type === 'jetpack') this.lastJet = s0 + 14;
         const p = { obj, x: C.laneX(L), y: 1.25, s: s0 + 14, type: obj.type, t: Math.random() * 6 };
         obj.group.position.set(p.x, p.y, -p.s);
         this.powerups.push(p);
-        this.nextPower = k + 9 + C.randi(0, 6);
+        this.nextPower = k + 12 + C.randi(0, 6);
       }
     }
   }
@@ -347,14 +362,14 @@ export class Spawner {
       case 'moving': {
         const moving = content === 'moving';
         const cars = moving ? 1 + (Math.random() < 0.5 ? 1 : 0)
-          : 1 + (Math.random() < 0.45 + 0.3 * diff ? 1 : 0) + (Math.random() < 0.2 * diff ? 1 : 0);
+          : 1 + (Math.random() < 0.55 + 0.3 * diff ? 1 : 0) + (Math.random() < 0.35 * diff ? 1 : 0);
         const tr = this.get('train');
         const len = tr.setup(cars, moving);
         const front = s0 + 2;
         const o = this.addObstacle('train', tr, L, front, len);
         if (moving) {
           o.moving = true;
-          o.speed = 8 + 4 * diff;
+          o.speed = 9 + 7 * diff;
           this.lastMoving = k;
         }
         this.busy[L] = k + Math.ceil((front + len - s0) / C.SLOT);
@@ -395,17 +410,19 @@ export class Spawner {
     }
   }
 
-  placeCoins(content, info, blocked, safe, s0, k) {
+  placeCoins(content, info, blocked, safe, s0, k, prev) {
     const co = this.coins;
     // Roof rewards on plain parked trains.
     for (let L = 0; L < 3; L++) {
       const inf = info[L];
-      if (content[L] === 'train' && !inf.moving && Math.random() < 0.3) {
+      const reach = content[L - 1] === 'rampTrain' || content[L + 1] === 'rampTrain' || (prev.padRow === k - 1 && prev.padLanes.includes(L));
+      if (content[L] === 'train' && !inf.moving && reach && Math.random() < 0.45) {
         for (let s = inf.front + 1.5; s < inf.front + inf.len - 1; s += 2.4) co.add(C.laneX(L), C.TRAIN_TOP + 0.9, s);
       }
       if (content[L] === 'pad') {
-        // a high arc of coins that only a spring launch can reach
-        for (let i = 1; i <= 7; i++) co.add(C.laneX(L), 1.2 + 4.8 * Math.sin((i / 9) * Math.PI), inf.at + i * 3.2);
+        // a high arc of coins that only a spring launch can reach, on the launch's real ballistic path; it stops
+        // before the fall so a landing on a following train roof still collects all of it
+        arcCoins(co, C.laneX(L), inf.at - 0.45, C.PAD_JUMP_H, 0.06, 0.74, 7);
       }
     }
     if (k < 1 || Math.random() > 0.82) return;
@@ -421,18 +438,29 @@ export class Spawner {
         co.add(x, h + 0.9, s);
       }
     } else if (c === 'hurdle') {
-      for (let i = -3; i <= 3; i++) {
-        const t = i / 3.6;
-        co.add(x, 0.9 + Math.max(0, 1.9 * (1 - t * t)), inf.at + i * 2.1);
-      }
+      arcCoins(co, x, inf.at, C.JUMP_H, 0.08, 0.92, 7, true);
     } else if (c === 'overhead') {
       for (let s = s0 + 4; s <= s0 + 16; s += 2) co.add(x, 0.55, s);
     } else if (c === 'combo') {
       for (let s = inf.at - 4; s <= inf.at + 2; s += 2) co.add(x, 0.55, s);
-      for (let i = -2; i <= 2; i++) co.add(x, 0.9 + 1.9 * (1 - (i / 3.6) ** 2), inf.at2 + i * 2.1);
+      arcCoins(co, x, inf.at2, C.JUMP_H, 0.12, 0.88, 5, true);
     } else if (c === 'empty' || c === 'boost') {
       for (let s = s0 + 3; s <= s0 + 17; s += 2) co.add(x, 0.9, s);
     }
+  }
+}
+
+/**
+ * `n` coins along a jump of apex height `h` (GRAVITY physics, at the run speed of that stretch), from fraction `u0` to
+ * `u1` of the airtime. A launch pad throws the hero up at `s`; a hurdle hop is centred on the hurdle at `s`.
+ * Coins sit 0.9 above the feet (the pickup box is centred there), so the whole line is caught in one jump.
+ */
+function arcCoins(co, x, s, h, u0, u1, n, centred = false) {
+  const g = C.GRAVITY, vy = Math.sqrt(2 * g * h), ta = vy / g, T = ta + Math.sqrt(2 * h / (g * C.FALL_GRAVITY)), v = C.speedAt(s);
+  for (let i = 0; i < n; i++) {
+    const t = T * (u0 + (u1 - u0) * (i / (n - 1)));
+    const feet = t <= ta ? vy * t - 0.5 * g * t * t : h - 0.5 * g * C.FALL_GRAVITY * (t - ta) ** 2;
+    co.add(x, 0.9 + feet, s + v * (centred ? t - ta : t));
   }
 }
 

@@ -605,21 +605,6 @@
   .help-powers img { width: 30px; height: 30px; }
   @media (max-height: 520px) { .help-card h2 { font-size: 26px; } .help-card { gap: 6px; padding: 10px 14px 12px; } }
   #help { overflow-y: auto; align-items: safe center; }
-  /* ---------- first-run hints (main.js updateTutorial) ---------- */
-  #tut-hint { position: absolute; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 7%); transform: translateX(-50%);
-    display: grid; justify-items: center; gap: 4px; padding: 10px 22px 14px; border-radius: 26px; background: rgba(59, 29, 14, 0.55);
-    pointer-events: none; white-space: nowrap; color: var(--white);
-    font: 900 clamp(24px, 6vw, 36px)/1.1 var(--font-cjk); text-shadow: var(--ol); animation: tut-in 0.25s cubic-bezier(0.2, 0.9, 0.3, 1.3); }
-  #tut-hint kbd { margin: 0 2px; vertical-align: 3px; }
-  .tut-hand { width: 64px; height: 64px; filter: drop-shadow(0 4px 0 rgba(59, 29, 14, 0.45)); }
-  #tut-hint[data-dir="up"] .tut-hand { animation: tut-up 0.8s ease-in-out infinite; }
-  #tut-hint[data-dir="down"] .tut-hand { animation: tut-down 0.8s ease-in-out infinite; }
-  #tut-hint[data-dir="side"] .tut-hand { animation: tut-side 1s ease-in-out infinite; }
-  @keyframes tut-in { 0% { opacity: 0; transform: translateX(-50%) scale(0.6); } 100% { opacity: 1; transform: translateX(-50%); } }
-  @keyframes tut-up { 0% { transform: translateY(16px); opacity: 0.2; } 40% { opacity: 1; } 100% { transform: translateY(-20px); opacity: 0; } }
-  @keyframes tut-down { 0% { transform: rotate(180deg) translateY(16px); opacity: 0.2; } 40% { opacity: 1; } 100% { transform: rotate(180deg) translateY(-20px); opacity: 0; } }
-  @keyframes tut-side { 0%, 100% { transform: rotate(-90deg) translateY(10px); } 50% { transform: rotate(90deg) translateY(10px); } }
-  @media (prefers-reduced-motion: reduce) { #tut-hint, #tut-hint .tut-hand { animation: none !important; } }
 
   /* ---------- leaderboard (src/board-ui.js) + friend challenge (src/challenge.js) ---------- */
   .chip-btn { cursor: pointer; color: var(--ink); font: 900 15px/1 var(--font-cjk); }
@@ -752,6 +737,8 @@
     #menu .news-chip { display: none; }
   }
 </style>
+<link rel="stylesheet" href="shop.css"><!-- 造型店 (src/shop-ui.js) -->
+<link rel="stylesheet" href="wish.css"><!-- 許願池 (src/wish-ui.js) -->
 <script>
   // Browsers without import maps (iOS Safari before 16.4) get them from es-module-shims; others skip it
   if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap'))) {
@@ -816,7 +803,6 @@
   </div>
   <div id="toast" role="status" aria-live="polite"></div>
   <div id="popups" aria-hidden="true"></div>
-  <div id="tut-hint" role="status" aria-live="polite" hidden><svg class="tut-hand" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 6 54 30H41v26H23V30H10z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="5" stroke-linejoin="round"/></svg><span></span></div>
   <div id="coin-fly" aria-hidden="true"></div>
   <div id="fever-frame" aria-hidden="true"></div>
 
@@ -845,7 +831,7 @@
           <span class="daily-info" id="daily-info"></span>
         </div>
       </div>
-      <button class="news-chip" id="news-chip" type="button" hidden><b>NEW</b><span id="news-text">排行榜・挑戰朋友・特效設定</span></button>
+      <button class="news-chip" id="news-chip" type="button" hidden><b>NEW</b><span id="news-text">造型店・任務獎勵・更快更刺激</span></button>
       <div class="vs-banner" id="vs-banner" hidden>
         <span><b id="vs-name"></b> 向你下戰帖：<b id="vs-score"></b> 分</span>
         <button id="vs-close" type="button" aria-label="取消挑戰">×</button>
@@ -854,6 +840,7 @@
         <div class="chip">最高分 <b id="best">0</b></div>
         <div class="chip"><img src="assets/ui/icon_coin.webp" alt="金幣"><b id="bank">0</b></div>
         <button id="btn-board" class="chip chip-btn" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10v4.5a5 5 0 0 1-10 0z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/><path d="M7 6H4.5v1.2A3.3 3.3 0 0 0 7.6 10.5M17 6h2.5v1.2a3.3 3.3 0 0 1-3.1 3.3" fill="none" stroke="#3b1d0e" stroke-width="2" stroke-linecap="round"/><path d="M12 13.5v3.5M8.5 20.5h7l-.8-3.5H9.3z" fill="#ff9e22" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>排行榜</button>
+        <button id="btn-wish" class="chip chip-btn wish-entry" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.5 6.6 19.5l1.2-6-4.5-4.2 6.1-.7z" fill="#ffd23f" stroke="#3b1d0e" stroke-width="2" stroke-linejoin="round"/></svg>許願池<i class="wish-dot" aria-hidden="true" hidden></i></button>
       </div>
       </div>
       <div class="menu-aux">
@@ -986,7 +973,7 @@
           <span><img src="assets/ui/icon_jetpack.webp" alt="">噴射背包</span>
         </div>
         <div class="help-row"><b>每日挑戰</b><p>大家當天跑同一條賽道，每天的特殊規則都不一樣。跑到 1,000 m 領金幣，連續天數越多領越多。</p></div>
-        <div class="help-row"><b>任務與商店</b><p>一次完成三個任務，起跑倍率永久 +1。金幣可以在商店升級道具時間和開局護盾機率。</p></div>
+        <div class="help-row"><b>任務與商店</b><p>每完成一個任務就領金幣，三個全部完成再領一筆，起跑倍率永久 +1 並換新任務。點任務可以設為「下一個目標」，主選單和結算畫面會提醒你下一步做什麼。金幣可以在商店升級道具時間和開局護盾機率。</p></div>
         <div class="help-row"><b>排行榜</b><p>結算畫面看名次，按「挑戰朋友」把成績傳給朋友比比看！</p></div>
       </div>
       <div class="card-actions"><button id="btn-help-back" class="btn btn-alt" type="button">知道了</button></div>

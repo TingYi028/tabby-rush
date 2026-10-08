@@ -68,6 +68,7 @@ export class UI {
   show(name) {
     for (const s of this.screens) $(s).hidden = s !== name;
     $('hud').hidden = !(name === 'hud' || name === 'pause');
+    if (name === 'hud') this.coinRect = null;   // measured again on the first coin flight of the run
     document.body.dataset.screen = name;
   }
 
@@ -83,7 +84,12 @@ export class UI {
 
   hud(score, coins, m, hot) {
     if (score !== this.last.score) { $('score').textContent = fmt.format(score); this.last.score = score; }
-    if (coins !== this.last.coins) { $('coins').textContent = fmt.format(coins); this.last.coins = coins; }
+    if (coins !== this.last.coins) {
+      const txt = fmt.format(coins);
+      $('coins').textContent = txt;
+      this.last.coins = coins;
+      if (txt.length !== this.coinLen) { this.coinLen = txt.length; this.coinRect = null; }   // the box grows leftwards with the digits
+    }
     if (m !== this.last.mult) {
       const el = $('mult');
       el.textContent = `×${m}`;
@@ -165,6 +171,10 @@ export class UI {
       this.fly.pool.push(img);
     }
     this.reduce = matchMedia('(prefers-reduced-motion: reduce)');
+    // where coins fly to: measured once per layout, not on every flight (forced layout on phones)
+    this.coinRect = null;
+    this.coinLen = 0;
+    window.addEventListener('resize', () => { this.coinRect = null; });
   }
 
   /**
@@ -202,7 +212,7 @@ export class UI {
     const img = f.pool[f.i];
     f.i = (f.i + 1) % f.pool.length;
     if (img.anim) img.anim.cancel();
-    const r = $('coin-box').querySelector('img').getBoundingClientRect();
+    const r = this.coinRect || (this.coinRect = $('coin-box').querySelector('img').getBoundingClientRect());
     const tx = r.left + r.width / 2, ty = r.top + r.height / 2;
     // quadratic arc: rises from the pickup first, then sweeps across into the counter
     const cx = x + (tx - x) * 0.1, cy = ty + (y - ty) * 0.2;

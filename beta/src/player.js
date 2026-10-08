@@ -4,6 +4,10 @@ import { TrickTracker, TRICK } from './tricks.js';
 import { images, makeTexture } from './assets.js';
 import { blobShadowCanvas, bubbleCanvas, makeCanvas } from './textures.js';
 import { FXP } from './settings.js';
+import { patchHeroShader, HERO_LOOK_COUNT } from './hero-look.js';
+
+// `?nolook` in the address: never compile a shop look (bisecting a shader problem on a device)
+const NO_LOOK = typeof location !== 'undefined' && /[?&]nolook(&|=|$)/.test(location.search);
 
 // Sprite frames are 512x640 with the feet at y=612; the hero stands ~1.95 units tall.
 const FRAME_H = 2.45;
@@ -37,9 +41,21 @@ export class Player {
     this.material.color.setRGB(1.0, 0.97, 0.93);
     // Cross-dissolve into the next frame at the end of each frame so the cycle reads smoothly.
     this.blendU = { map2: { value: this.frames.run[1] }, blend: { value: 0 } };
+    // Shop looks (src/hero-look.js): one compiled program per look, the zone tint (material.color) still multiplies the
+    // result; look 0 is exactly the plain cross-fade. Uniforms are shared by all looks.
+    this.lookIdx = 0;
+    this.lookU = { heroT: { value: 0 }, heroGlow: { value: 1 }, heroCalm: { value: 0 } };
+    this.material.customProgramCacheKey = () => `hero${this.lookIdx}`;
     this.material.onBeforeCompile = (sh) => {
       sh.uniforms.map2 = this.blendU.map2;
       sh.uniforms.blend = this.blendU.blend;
+      const patched = patchHeroShader(sh.fragmentShader, this.lookIdx);
+      if (patched) {
+        if (this.lookIdx) Object.assign(sh.uniforms, this.lookU);
+        sh.fragmentShader = patched;
+        return;
+      }
+      this.lookIdx = 0; // stock shader changed under us: plain cross-fade
       sh.fragmentShader = sh.fragmentShader
         .replace('#include <common>', '#include <common>\nuniform sampler2D map2;\nuniform float blend;')
         .replace('#include <map_fragment>', `#ifdef USE_MAP
@@ -114,6 +130,22 @@ export class Player {
 
   input(action) {
     if (!this.crashed) this.queue.push(action);
+  }
+
+  /** Wear shop look `n` (0 = original, see hero-look.js). Compiles that look's program on the next render (cached after). */
+  setLook(n) {
+    n = NO_LOOK || !(n >= 1 && n <= HERO_LOOK_COUNT) ? 0 : n | 0;
+    if (n === this.lookIdx) return;
+    this.lookIdx = n;
+    this.material.needsUpdate = true;
+  }
+
+  /** Per frame while a look is worn: shader clock (seconds) + the effects / reduce-flashing settings. */
+  updateLook(t) {
+    const u = this.lookU;
+    u.heroT.value = t % 1000;
+    u.heroGlow.value = FXP.glow;
+    u.heroCalm.value = FXP.calm ? 1 : 0;
   }
 
   get height() { return this.rollT > 0 ? C.ROLL_H : C.STAND_H; }
@@ -203,7 +235,7 @@ export class Player {
       }
     }
     if (!this.onGround && !flying) {
-      this.vy -= C.GRAVITY * (this.vy < 0 ? 1.12 : 1) * dt;
+      this.vy -= C.GRAVITY * (this.vy < 0 ? C.FALL_GRAVITY : 1) * dt;
       this.y += this.vy * dt;
       if (this.y <= g) {
         const fall = -this.vy;

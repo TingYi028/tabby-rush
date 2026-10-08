@@ -10,10 +10,10 @@ import { store } from './audio.js';
  */
 
 export const DAILY = {
-  goal: 1000,       // metres that complete today's challenge
+  goal: 2000,       // metres that complete today's challenge
   reward: 300,      // coins for the first completion of the day, x streakMult()
   streakCap: 5,     // the multiplier stops growing after this many days in a row
-  fastSpeed: 27,    // 高速起跑: run-speed floor (BASE_SPEED 18.5 .. MAX_SPEED 37)
+  fastSpeed: 35,    // 高速起跑: run-speed floor (BASE_SPEED 21 .. MAX_SPEED 42)
   magnetTime: 15,   // 磁鐵開局: seconds of magnet from the start line
 };
 

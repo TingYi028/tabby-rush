@@ -94,7 +94,7 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
   if (inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6)) {
     for (let L = 0; L < 3; L++) if (content[L] === 'pad' || content[L] === 'boost') content[L] = 'empty';
     for (let L = 0; L < 3; L++) {
-      if (content[L] !== 'rampTrain' || (sp.lastBoost === k - 1 && sp.boostLane === L)) continue;
+      if (content[L] !== 'rampTrain' || (sp.lastBoost === k - 1 && sp.boostLane === L) || (sp.padRow === k - 1 && sp.padLanes.includes(L))) continue;
       content[L] = 'train';
       blocked[L] = true;
       if (!fair(prevBlocked, content, blocked)) { content[L] = 'rampTrain'; blocked[L] = false; }
@@ -104,7 +104,7 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
   if (spawn.barriers > 0 && !breather && k > 3) {
     const tunnelRow = inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6);
     for (let L = 0; L < 3; L++) {
-      if (content[L] !== 'empty' || L === sp.safe || sp.reserved(sp.reserve, L)) continue;
+      if (content[L] !== 'empty' || L === sp.safe || sp.reserved(sp.reserve, L) || (sp.comboRow === k - 1 && sp.comboLane === L)) continue;
       // only ~0.2 eligible lanes per row late in a run, so this adds about `barriers` × the base ~0.47 barriers per row
       if (Math.random() < spawn.barriers * 2.6) {
         const kind = Math.random() < 0.5 ? 'hurdle' : 'overhead';

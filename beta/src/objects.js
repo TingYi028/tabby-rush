@@ -470,6 +470,22 @@ export class Coins {
     const rimMat = new THREE.MeshStandardMaterial({
       color: 0xf4b41a, metalness: 0.85, roughness: 0.25, emissive: 0x8a5200, emissiveIntensity: 0.6,
     });
+    // The spin happens in the vertex shader (angle from time + the coin's track position), so the instance matrices
+    // are pure translations that only change when coins appear, go or get pulled by the magnet.
+    this.spin = { value: 0 };
+    const spin = (m) => {
+      m.onBeforeCompile = (sh) => {
+        sh.uniforms.uSpin = this.spin;
+        sh.vertexShader = sh.vertexShader
+          .replace('#include <common>', `#include <common>
+            uniform float uSpin;
+            mat3 coinSpin() { float a = uSpin * 4.2 - instanceMatrix[3].z * 0.35; float c = cos(a), s = sin(a); return mat3(c, 0., -s, 0., 1., 0., s, 0., c); }`)
+          .replace('#include <beginnormal_vertex>', '#include <beginnormal_vertex>\n objectNormal = coinSpin() * objectNormal;')
+          .replace('#include <begin_vertex>', '#include <begin_vertex>\n transformed = coinSpin() * transformed;');
+      };
+    };
+    spin(faceMat);
+    spin(rimMat);
     this.rim = new THREE.InstancedMesh(rimGeo, rimMat, this.cap);
     this.face = new THREE.InstancedMesh(faceGeo, faceMat, this.cap);
     for (const m of [this.rim, this.face]) {
@@ -479,13 +495,14 @@ export class Coins {
       parent.add(m);
     }
     this.list = [];
-    this.dummy = new THREE.Object3D();
+    this.dirty = true;
   }
   add(x, y, s) {
     if (this.list.length >= this.cap) return;
     this.list.push({ x, y, s, mag: false, phase: s * 0.35 });
+    this.dirty = true;
   }
-  clear() { this.list.length = 0; }
+  clear() { this.list.length = 0; this.dirty = true; }
   /** Returns the collected coins' positions (track coordinates) for effects. */
   /**
    * `prevDist`: the hero's distance last frame (pickups cover the whole frame's travel, so low frame rates
@@ -496,7 +513,7 @@ export class Coins {
     const L = this.list;
     for (let i = L.length - 1; i >= 0; i--) {
       const c = L[i];
-      if (c.s < dist - 12) { L[i] = L[L.length - 1]; L.pop(); continue; }
+      if (c.s < dist - 12) { L[i] = L[L.length - 1]; L.pop(); this.dirty = true; continue; }
       const ahead = c.s - dist;
       if (magnet && ahead < 16 && ahead > -1.5 && !c.mag) { c.mag = true; c.off = ahead; }
       if (c.mag && collect) {
@@ -506,22 +523,27 @@ export class Coins {
         c.y += (py + 1.0 - c.y) * k;
         c.off *= 1 - k;
         c.s = dist + c.off;
+        this.dirty = true;
       }
       if (!collect) continue;
       if (c.s > prevDist - 0.9 && c.s < dist + 0.9 && Math.abs(c.x - px) < 0.95 && Math.abs(c.y - (py + 0.9)) < 1.35) {
         got.push(c);
         L[i] = L[L.length - 1];
         L.pop();
+        this.dirty = true;
       }
     }
-    const d = this.dummy;
+    this.spin.value = t % 600;
+    if (!this.dirty) return got;
+    this.dirty = false;
+    // instance matrices start as identity; only the translation column changes
+    const a = this.rim.instanceMatrix.array, b = this.face.instanceMatrix.array;
     for (let i = 0; i < L.length; i++) {
-      const c = L[i];
-      d.position.set(c.x, c.y, -c.s);
-      d.rotation.set(0, t * 4.2 + c.phase, 0);
-      d.updateMatrix();
-      this.rim.setMatrixAt(i, d.matrix);
-      this.face.setMatrixAt(i, d.matrix);
+      const c = L[i], o = i * 16;
+      a[o] = a[o + 5] = a[o + 10] = a[o + 15] = b[o] = b[o + 5] = b[o + 10] = b[o + 15] = 1;
+      a[o + 12] = b[o + 12] = c.x;
+      a[o + 13] = b[o + 13] = c.y;
+      a[o + 14] = b[o + 14] = -c.s;
     }
     this.rim.count = this.face.count = L.length;
     this.rim.instanceMatrix.needsUpdate = true;
