@@ -1,26 +1,42 @@
 import * as THREE from 'three';
 import { makeTexture } from './assets.js';
-import { companionSheet } from './cosmetic-art.js';
+import { companionSheet, loadArt, petSheetUrl, PET_ART } from './cosmetic-art.js';
 import { damp } from './config.js';
 import { FXP } from './settings.js';
 
 /*
  * Cosmetic companions and afterimages (see cosmetics.js). Both are plain scene objects (not in the moving world root):
- *  - Companions: one billboard sprite (a 2-frame procedural sheet from cosmetic-art.js) that follows the hero with lag
- *    on the lane side that is free, hovering or on the ground, with a hop when something happens. No collision,
- *    no sound, nothing to read: it must never be mistaken for the warning drone.
+ *  - Companions: one billboard sprite (a 2-frame procedural sheet from cosmetic-art.js, or the image sheet of an r03 pet
+ *    from assets/pets: 2 or 4 frames of 256 px, loaded when the pet is equipped, a coloured blob until then) that follows
+ *    the hero with lag on the lane side that is free, hovering or on the ground, with a hop when something happens.
+ *    No collision, no sound, nothing to read: it must never be mistaken for the warning drone.
  *  - Ghosts: the 影印機分身 trail, two delayed faint copies of the hero sprite (frames, lean and squash included).
  * Per-frame code allocates nothing.
  */
 
 // dx: lateral offset from the hero; hover: height of the sprite centre above the hero's feet (0 = stands on the ground);
-// lag / lagY: follow speeds; fps: frame flips per second
+// lag / lagY: follow speeds; fps: frames per second (cycling through `frames`, default 2)
 const SPEC = {
   drone: { size: 0.95, dx: 1.35, hover: 2.15, lag: 6, lagY: 5, bob: 0.12, fps: 12, tilt: 0.5 },
   box: { size: 1.05, dx: 1.3, hover: 0, lag: 7, lagY: 9, bob: 0.0, fps: 1.6, tilt: 0.2 },
   fish: { size: 1.2, dx: 1.35, hover: 2.35, lag: 4.5, lagY: 4, bob: 0.18, fps: 3.5, tilt: 0.6 },
   train: { size: 1.15, dx: 1.4, hover: 0, lag: 8, lagY: 10, bob: 0.03, fps: 9, tilt: 0.1 },
   ufo: { size: 1.25, dx: 1.35, hover: 2.6, lag: 5, lagY: 4, bob: 0.14, fps: 5, tilt: 0.7 },
+  shiba: { size: 1.1, dx: 1.35, hover: 0, lag: 7, lagY: 9, bob: 0.03, fps: 4, tilt: 0.2 },
+  muyu: { size: 1.0, dx: 1.35, hover: 0, lag: 7, lagY: 9, bob: 0.0, fps: 2.2, tilt: 0.15 },
+  capy: { size: 1.15, dx: 1.4, hover: 0, lag: 5, lagY: 6, bob: 0.06, fps: 0.9, tilt: 0.3 },
+  boba: { size: 1.05, dx: 1.35, hover: 0, lag: 7, lagY: 9, bob: 0.03, fps: 5, tilt: 0.2 },
+  saltfish: { size: 1.2, dx: 1.4, hover: 0, lag: 8, lagY: 10, bob: 0.0, fps: 0.33, tilt: 0.05 },   // one flip every ~3 s
+  ox: { size: 1.25, dx: 1.4, hover: 0, lag: 6, lagY: 8, bob: 0.02, fps: 0.8, tilt: 0.12 },
+  pudding: { size: 1.3, dx: 1.4, hover: 0, lag: 6, lagY: 8, bob: 0.08, fps: 6, tilt: 0.25, frames: 4 },   // the 4-frame waddle
+  xlb: { size: 1.0, dx: 1.35, hover: 0, lag: 7, lagY: 9, bob: 0.04, fps: 4, tilt: 0.2 },
+  mochi: { size: 1.05, dx: 1.35, hover: 0, lag: 7, lagY: 9, bob: 0.02, fps: 2.5, tilt: 0.15 },
+  pigeon: { size: 1.1, dx: 1.4, hover: 0, lag: 7, lagY: 9, bob: 0, fps: 3.5, tilt: 0.25 },
+  robovac: { size: 1.0, dx: 1.4, hover: 0, lag: 8, lagY: 10, bob: 0, fps: 4, tilt: 0.1 },
+  sweetpotato: { size: 1.3, dx: 1.4, hover: 0, lag: 6, lagY: 8, bob: 0.06, fps: 3.5, tilt: 0.2 },
+  puffer: { size: 1.2, dx: 1.35, hover: 1.9, lag: 4.5, lagY: 4, bob: 0.16, fps: 1.6, tilt: 0.5 },   // a balloon: floats like the fish
+  panda: { size: 1.25, dx: 1.4, hover: 0, lag: 6, lagY: 8, bob: 0.03, fps: 3, tilt: 0.2 },
+  penguin: { size: 1.2, dx: 1.4, hover: 0, lag: 6, lagY: 8, bob: 0.02, fps: 0.7, tilt: 0.12 },
 };
 
 export class Companions {
@@ -28,6 +44,7 @@ export class Companions {
     this.sprite = null;
     this.mat = null;
     this.cache = {};
+    this.frames = 2;
     this.spec = null;
     this.fx = '';
     this.x = 0; this.y = 0;
@@ -55,18 +72,36 @@ export class Companions {
     this.spec = SPEC[fx] || null;
     this.ready = false;
     if (!this.sprite) return;
+    for (const k of Object.keys(this.cache)) if (k !== fx) { this.cache[k].dispose(); delete this.cache[k]; }   // one sheet resident
     if (!this.spec) { this.sprite.visible = false; return; }
+    this.frames = this.spec.frames || 2;
     let tex = this.cache[fx];
     if (!tex) {
-      tex = this.cache[fx] = makeTexture(companionSheet(fx));
-      tex.repeat.set(0.5, 1);
-      tex.generateMipmaps = false;                 // the two frames sit side by side: no mip bleeding between them
-      tex.minFilter = THREE.LinearFilter;
+      tex = this.cache[fx] = this.sheetTexture(companionSheet(fx));
+      if (PET_ART[fx]) {                 // image pet: the blob stands in until assets/pets/pet_<fx>.webp has loaded
+        loadArt(petSheetUrl(fx)).then((img) => {
+          if (!img || this.fx !== fx || this.cache[fx] !== tex) return;
+          const real = this.cache[fx] = this.sheetTexture(img);
+          tex.dispose();
+          this.mat.map = real;
+          this.mat.needsUpdate = true;
+          this.frame = -1;
+        });
+      }
     }
     this.mat.map = tex;
     this.mat.needsUpdate = true;
     this.frame = -1;
     this.sprite.scale.set(this.spec.size, this.spec.size, 1);
+  }
+
+  /** A texture of `frames` equal frames side by side (the frames must not bleed into each other: no mip chain). */
+  sheetTexture(src) {
+    const tex = makeTexture(src);
+    tex.repeat.set(1 / this.frames, 1);
+    tex.generateMipmaps = false;
+    tex.minFilter = THREE.LinearFilter;
+    return tex;
   }
 
   /** Something happened ('crash' | 'revive' | 'rush' | 'coin'): a hop. */
@@ -91,8 +126,8 @@ export class Companions {
     this.hop = Math.max(0, this.hop - dt * 2.4);
     s.position.set(this.x, this.y, 0.45);
     this.mat.rotation = (tx - this.x) * sp.tilt * 0.12;
-    const f = Math.floor(t * sp.fps) & 1;
-    if (f !== this.frame) { this.frame = f; this.mat.map.offset.x = f * 0.5; }
+    const f = Math.floor(t * sp.fps) % this.frames;
+    if (f !== this.frame) { this.frame = f; this.mat.map.offset.x = f / this.frames; }
   }
 }
 

@@ -95,7 +95,7 @@
   .combo-kinds i.lit { background: var(--sun); color: var(--ink); box-shadow: 0 2px 0 var(--ink); animation: combo-bump 0.35s ease-out; }
   #combo.all .combo-kinds i.lit { background: #ff9ad0; }
   @keyframes combo-bump { 0% { transform: scale(1.4); } 100% { transform: scale(1); } }
-  .hud-right { display: grid; justify-items: end; gap: 10px; }
+  .hud-right { display: grid; justify-items: end; gap: 10px; flex: none; } /* never shrunk: the pause button stays inside the screen at 280 px (the score box gives way) */
   .coin-row { display: flex; align-items: center; gap: 10px; }
   #coin-box { display: flex; align-items: center; gap: 6px; padding: 3px 18px 3px 4px; background: rgba(59, 29, 14, 0.58);
     border: 3px solid var(--ink); border-radius: 999px; }
@@ -898,7 +898,7 @@
       <img class="go-hero" src="assets/hero/crash.webp" alt="">
       <div id="go-ribbon" hidden>新紀錄！</div>
       <div class="go-col">
-      <h2>撞車啦！</h2>
+      <div class="go-title" id="go-title"><h2>撞車啦！</h2></div>
       <div class="go-stats">
         <div class="go-row main"><span>分數</span><b id="go-score">0</b></div>
         <div class="go-row"><span><img src="assets/ui/icon_coin.webp" alt="">金幣</span><b id="go-coins">0</b></div>

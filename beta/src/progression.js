@@ -7,15 +7,21 @@ import { DAILY, dailyStatus, dailyToday, rewardFor as dailyReward } from './dail
  * Meta progression ("reasons to play again"): one versioned save, the coin shop and missions.
  *
  * Save, localStorage `tabbyrush.save` (via `store`; everything still works in memory without storage):
- *   { v: 2, bank, best,
+ *   { v: 2, rev, bank, best,                                   // rev: write counter, see persist()
  *     upg: { magnet, sneakers, x2, jetpack, shield },        // shop levels
  *     missions: { lvl, skipDay, focus (pinned mission id), rev, slots: [{ id, goal, prog, done }] x3 },
  *     stats: { runs, coins, dist, missions, spent, bestCoins, bestDist, missionCoins, sets, pins },
  *     recent: [[dist, coins, score] x up to 10],              // last finished runs: the pace that sizes new goals
- *     mig: { jet } }                                          // one-off migrations already applied
+ *     mig: { jet, sets } }                                    // one-off migrations already applied
  * v1 saves load unchanged (the sanitizer ignores `v`): unknown mission ids are dropped, missing fields default,
  * and `missions.rev` < MISSION_REV re-scales the open missions to the current goal table keeping their progress ratio.
  * The first load migrates the old `tabbyrush.best` / `tabbyrush.bank` keys; those keys stay mirrored.
+ * Mission level is earned one finished set at a time: a save with `missions.lvl` above `stats.sets` is clamped to it
+ * (saves from before `sets` was counted have no such key and keep their level; so do saves of the r02 beta, which wrote
+ * `sets: 0` without the `mig.sets` flag: they get `sets = max(sets, lvl)` once, see sanitize()).
+ * Two tabs: every write bumps `rev`; a tab whose copy is older than the stored one never overwrites it, it reloads the
+ * stored save instead and lays what it did itself since its last read / write on top: the coin change (earned minus
+ * spent) and, after a finished run, the run's stats and mission progress (persist(), catchUp(), adopt(), replayRun()).
  * main.js keeps G.best / G.bank as the live values: every save reads them back from G (sync()).
  *
  * Missions: a set is three missions of different kinds (a single-run performance goal, a cumulative goal and a
@@ -187,10 +193,14 @@ let G = null;
 let view = null;
 let ctx = { ui: null, audio: null };
 let notice = null;   // one-off message for the menu (jetpack refund)
+let leveled = 0;     // a level-up that adopt() dealt while a run was being merged (endRun shows it on the card)
+let stored = '';     // the save as this tab last read or wrote it (JSON text): persist() skips writes that change nothing
+let baseBank = 0, baseSpent = 0;   // bank / stats.spent of that same read or write: what this tab changed since is its own to keep
 const goalSources = [];   // extra "next goal" candidates from other modules (see addGoalSource)
 const run = {
   active: false, daily: false, c: zeroCounters(), fresh: [], stumbled: false, allToast: false,
   bank0: 0, reward: 0, setReward: 0, time: 0, liveAt: -1e9, nearDone: [false, false, false], nearDue: [0, 0, 0],
+  merge: false,   // a run was committed and not yet written: if the stored save is newer, replayRun() lays it on top
 };
 
 /** Live power-up durations (seconds), kept in step with the shop; pass to ui.powers() as the bar max. */
@@ -198,12 +208,12 @@ export const powerMax = { ...C.POWER_TIME };
 
 function fresh() {
   return {
-    v: VERSION, bank: 0, best: 0,
+    v: VERSION, rev: 0, bank: 0, best: 0,
     upg: Object.fromEntries(Object.keys(SHOP).map((k) => [k, 0])),
     missions: { lvl: 0, skipDay: '', focus: '', rev: MISSION_REV, slots: [] },
     stats: { runs: 0, coins: 0, dist: 0, missions: 0, spent: 0, bestCoins: 0, bestDist: 0, missionCoins: 0, sets: 0, pins: 0 },
     recent: [],   // [dist, coins, score] of the last 10 finished runs (pace of the player, see paceOf)
-    mig: { jet: true },
+    mig: { jet: true, sets: true },
   };
 }
 
@@ -251,11 +261,21 @@ function newSet(lvl, avoid = [], prof = null) {
 function sanitize(raw) {
   if (!raw || typeof raw !== 'object') return null;
   const s = fresh();
+  s.rev = Math.min(2 ** 31, nat(raw.rev));
   s.bank = nat(raw.bank);
   s.best = nat(raw.best);
   for (const k of Object.keys(SHOP)) s.upg[k] = Math.min(SHOP[k].max, nat(raw.upg && raw.upg[k]));
   const m = raw.missions && typeof raw.missions === 'object' ? raw.missions : {};
   s.missions.lvl = nat(m.lvl);
+  const st = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
+  for (const k of Object.keys(s.stats)) s.stats[k] = nat(st[k]);
+  // a level is one finished set: a save claiming more levels than sets on record is clamped; one without a `sets` count
+  // (written before it existed) keeps its level and starts counting from there
+  if (Number.isFinite(st.sets)) {
+    // the r02 beta wrote `sets: 0` next to real levels: once (no `mig.sets`), a save that has finished runs counts them as sets
+    if (!(raw.mig && raw.mig.sets === true) && s.stats.runs > 0) s.stats.sets = Math.max(s.stats.sets, s.missions.lvl);
+    s.missions.lvl = Math.min(s.missions.lvl, s.stats.sets);
+  } else s.stats.sets = s.missions.lvl;
   s.missions.skipDay = typeof m.skipDay === 'string' ? m.skipDay.slice(0, 10) : '';
   s.missions.focus = typeof m.focus === 'string' && has(MISSIONS, m.focus) ? m.focus : '';
   const rescale = m.rev !== MISSION_REV;   // older goal table: keep the progress ratio, not the number
@@ -278,8 +298,6 @@ function sanitize(raw) {
     slots.push(newSlot(s.missions.lvl, slots, [], kind, prof));
   }
   s.missions.slots = slots;
-  const st = raw.stats && typeof raw.stats === 'object' ? raw.stats : {};
-  for (const k of Object.keys(s.stats)) s.stats[k] = nat(st[k]);
   // jetpack / sneakers upgrades got a flatter curve: one-off refund per level bought before that
   if (!(raw.mig && raw.mig.jet === true)) {
     const back = Object.keys(REFUND).reduce((sum, k) => sum + REFUND[k] * s.upg[k], 0);
@@ -293,8 +311,9 @@ function sanitize(raw) {
 }
 
 function load() {
-  const s = sanitize(store.get('save', null));
-  if (s) return s;
+  const raw = store.get('save', null);
+  const s = sanitize(raw);
+  if (s) { stored = JSON.stringify(raw); return s; }
   // first run on this version: migrate the old loose keys
   const m = fresh();
   m.best = nat(store.get('best', 0));
@@ -310,15 +329,94 @@ export function sync() {
   save.best = Math.max(save.best, nat(G.best));
 }
 
-/** Write the save. `withRun` folds the unfinished run's progress into the written copy only (tab hidden / closed). */
+/**
+ * Take `raw` (a save another tab wrote) as this tab's save and put this tab's own changes back on top of it: `own` is the
+ * coin change since this tab last read or wrote (earned minus spent, signed) and its `stats.spent`; with `merge` (a run
+ * was just committed) also the run's stats and mission progress (replayRun). Nothing the other tab did is undone and
+ * nothing is counted twice: the next write is a plain successor of the stored save.
+ */
+function adopt(raw, own = 0, merge = false) {
+  const s = sanitize(raw);
+  if (!s) return;
+  const mySpent = save ? Math.max(0, save.stats.spent - baseSpent) : 0;
+  const theirs = s.bank - baseBank;   // what the other tab changed
+  save = s;
+  stored = JSON.stringify(raw);
+  baseBank = s.bank;
+  baseSpent = s.stats.spent;
+  save.stats.spent += mySpent;
+  if (merge) {   // the mission payouts of this tab's own copy are decided again against the stored missions
+    own -= run.reward;
+    Object.assign(run, { reward: 0, setReward: 0, fresh: [] });
+    run.bank0 += theirs;   // the game-over ledger shows this run's coins, not the other tab's purchases
+  }
+  if (G) { G.bank = nat(s.bank + own); G.best = Math.max(nat(G.best), s.best); }
+  if (merge) replayRun();
+  refreshPowerMax();
+  const lvl = settle();
+  if (lvl) leveled = lvl;
+  if (ctx.ui && G) ctx.ui.stats(G.best, G.bank);
+  if (view) { view.renderMenu(lvl); view.refreshShop(); }
+  if (own || merge || mySpent) persist();
+}
+
+/** The finished run's counters on top of the stored save: its stats, its pace row and its progress on the missions it holds. */
+function replayRun() {
+  const c = run.c, st = save.stats;
+  st.runs += nat(c.runs);
+  st.coins += nat(c.coin);
+  st.dist += Math.floor(c.dist);
+  st.bestCoins = Math.max(st.bestCoins, nat(c.coin));
+  st.bestDist = Math.max(st.bestDist, Math.floor(c.dist));
+  if (c.runs) save.recent = save.recent.concat([[Math.floor(c.dist), nat(c.coin), nat(c.score)]]).slice(-10);
+  for (const s of save.missions.slots) {
+    if (s.done) continue;
+    const t = MISSIONS[s.id], v = Math.floor(c[t.m]);
+    s.prog = Math.min(s.goal, t.run ? Math.max(s.prog, v) : s.prog + v);
+    if (s.prog >= s.goal) finish(s, false);
+  }
+}
+
+/** Another tab saved since this tab last read or wrote? Then load its save (never mid-run); true when it did. */
+export function catchUp() {
+  if (!save || run.active) return false;
+  const raw = store.get('save', null);
+  if (!raw || nat(raw.rev) <= save.rev) return false;
+  adopt(raw, G ? G.bank - baseBank : 0);
+  return true;
+}
+
+/**
+ * Write the save. `withRun` folds the unfinished run's progress into the written copy only (tab hidden / closed).
+ * Two tabs share one localStorage: a write that would change nothing is skipped (a tab that is only opened or hidden
+ * must not look like a writer), and one from a tab whose copy is older than the stored `rev` is refused, so a stale
+ * tab can neither bring spent coins back nor erase what another tab did; it takes the stored save and adds its own
+ * coin change and, at the end of a run, that run (adopt()).
+ */
 function persist(withRun = false) {
   if (!save) return;
+  const own = G ? G.bank - baseBank : 0;
+  const merge = run.merge;
+  run.merge = false;
   sync();
   let out = save;
   if (withRun && run.active) {
     out = JSON.parse(JSON.stringify(save));
     out.missions.slots.forEach((s, i) => { if (!s.done) s.prog = Math.floor(progressOf(save.missions.slots[i])); });
   }
+  if (JSON.stringify(out) === stored) return;
+  const raw = store.get('save', null);
+  if (raw && nat(raw.rev) > save.rev) {
+    if (run.active) return;   // the run goes on; the next idle moment (catchUp) or the end of the run takes the stored save
+    adopt(raw, own, merge);
+    if (view) view.notice('另一個分頁剛更新過進度，已同步最新的存檔');
+    return;
+  }
+  out.rev = save.rev + 1;
+  save.rev = out.rev;
+  stored = JSON.stringify(out);
+  baseBank = save.bank;
+  baseSpent = save.stats.spent;
   store.set('save', out);
   store.set('best', save.best);
   store.set('bank', save.bank);
@@ -331,6 +429,8 @@ export function init(game, deps = {}) {
   G = game;
   ctx = { ui: deps.ui || null, audio: deps.audio || null };
   save = load();
+  baseBank = save.bank;
+  baseSpent = save.stats.spent;
   G.best = Math.max(nat(G.best), save.best);
   G.bank = save.bank;
   refreshPowerMax();
@@ -345,7 +445,8 @@ export function init(game, deps = {}) {
   notice = null;
   if (typeof window !== 'undefined') {
     window.addEventListener('pagehide', () => persist(true));
-    document.addEventListener('visibilitychange', () => { if (document.hidden) persist(true); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) persist(true); else catchUp(); });
+    window.addEventListener('storage', (e) => { if (e.key && e.key.endsWith('.save')) catchUp(); });   // another tab saved
   }
 }
 
@@ -393,6 +494,7 @@ export function price(type) {
 /** Buy the next level of `type`: 'ok' | 'max' | 'poor'. */
 export function buy(type) {
   if (!save || !G || typeof type !== 'string' || !has(SHOP, type)) return 'poor';
+  catchUp();   // pay from the coins the other tab left, not from a stale copy
   const p = price(type);
   if (!p) return 'max';
   if (G.bank < p) return 'poor';
@@ -408,6 +510,7 @@ export function buy(type) {
 /** Pay `n` coins from the bank for anything outside the upgrade list (cosmetics, consumables). False when short. */
 export function spend(n) {
   n = nat(n);
+  catchUp();
   if (!save || !G || !n || G.bank < n) return false;
   G.bank -= n;
   save.stats.spent += n;
@@ -419,6 +522,7 @@ export function spend(n) {
 /** Add `n` coins to the bank outside a run (mystery-box refunds, rewards). */
 export function earn(n) {
   n = nat(n);
+  catchUp();
   if (!save || !G || !n) return;
   G.bank += n;
   persist();
@@ -503,6 +607,7 @@ function commit() {
   st.bestCoins = Math.max(st.bestCoins, run.c.coin);
   st.bestDist = Math.max(st.bestDist, Math.floor(run.c.dist));
   run.active = false;
+  run.merge = true;
   if (run.daily) { run.daily = false; refreshPowerMax(); }   // back to the shop durations
 }
 
@@ -560,6 +665,7 @@ function state() {
 
 /** Swap one unfinished mission for a new one (same kind); one free skip per calendar day. */
 export function skip(i) {
+  catchUp();   // the other tab may have skipped today already
   const m = save && save.missions, s = m && m.slots[i];
   if (!s || s.done || run.active || m.skipDay === today()) return false;
   m.slots[i] = newSlot(m.lvl, m.slots.filter((_, j) => j !== i), m.slots.map((q) => q.id), MISSIONS[s.id].kind, paceOf(save));
@@ -676,6 +782,7 @@ function nearScan() {
  */
 export function startRun(game, daily = false) {
   if (!save) return;
+  catchUp();   // a run starts from the newest save: its coins and missions are folded into that one
   if (view) view.clearToasts(); // last run's leftover banners would otherwise play over this one
   Object.assign(run, {
     active: true, daily: !!daily, c: zeroCounters(), fresh: [], stumbled: false, allToast: false, bank0: nat(game.bank),
@@ -780,8 +887,10 @@ export function endRun(game) {
   const ran = run.active, runDist = Math.floor(run.c.dist);
   if (ran) save.stats.runs++;
   commit();
-  const lvl = settle();
+  leveled = 0;
+  let lvl = settle();
   persist();
+  lvl = lvl || leveled;   // persist() may have adopted a newer save of another tab and finished its set with this run
   // the coin ledger of this run: what was picked up, the 尖峰時段 bonus (main.js G.peakCoins: in game.coins, not a pick-up),
   // what a revive cost, what was paid on top, what reached the bank
   const bank = nat(game.bank), gross = nat(run.c.coin), peak = nat(game.peakCoins);
@@ -818,8 +927,12 @@ const api = {
   SHOP, UPGRADE_STEP, MAX_BONUS, base: C.POWER_TIME,
 };
 
-/** #debug helpers: window.__tabby.progression.debug.* */
-export const debug = {
+/**
+ * #debug helpers: window.__tabby.progression.debug.*. Only on a dev host (localhost / 127.0.0.1, where the QA harnesses serve the
+ * game) or outside a browser (node tests): on a published page the export is null, so the console can't import it and edit the bank.
+ */
+const DEV = typeof window === 'undefined' || !window.location || !window.location.hostname || ['localhost', '127.0.0.1'].includes(window.location.hostname);
+const dbg = !DEV ? null : {
   get save() { return save; },
   get run() { return run; },
   /** Complete mission slot `i` (first unfinished by default); live toast when a run is on. */
@@ -853,3 +966,4 @@ export const debug = {
   /** Wipe the save (keeps the legacy keys); reload the page afterwards. */
   wipe() { store.set('save', null); save = null; },
 };
+export { dbg as debug };

@@ -18,6 +18,8 @@
 .cs-bank b { font: 24px/1 var(--font-display); color: var(--sun); text-shadow: var(--ol-sm); font-variant-numeric: tabular-nums; }
 .cs-bank.bump img { animation: cs-flip 0.35s ease-out; }
 .card .cs-sub { margin: -2px 0 0; font: 700 13px/1.35 var(--font-cjk); color: #7a4a2a; text-wrap: pretty; }
+.card .cs-sub b { font-weight: 900; color: #0d7a6c; white-space: nowrap; }
+.cs-sub-t:not(:empty)::after { content: "\3000"; }
 
 /* tabs */
 .cs-tabs { display: flex; gap: 6px; }
@@ -34,8 +36,21 @@
 .cs-entry .cs-dot { top: -6px; right: -4px; }
 
 /* list */
-.cs-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 2px 4px 8px; }
-.cs-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; align-content: start; }
+.cs-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; padding: 2px 4px 8px; scroll-padding-top: 40px; }
+.cs-list, .cs-grp { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; align-content: start; }
+.cs-list { gap: 12px; }
+.cs-sect[hidden], .cs-item[hidden], .cs-empty[hidden], .cs-filter[hidden] { display: none; }
+/* section header (tabs with several kinds): stays at the top of the list while its section scrolls by */
+.cs-sec-h { position: sticky; top: 0; z-index: 3; display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 0 0 8px;
+  padding: 6px 4px 5px; background: var(--cream); border-bottom: 3px solid var(--ink); font: 900 14px/1.2 var(--font-cjk); color: var(--ink); }
+.cs-sec-n { font: 900 12px/1.2 var(--font-cjk); color: #0d7a6c; font-variant-numeric: tabular-nums; }
+.cs-empty { padding: 18px 8px; text-align: center; font: 700 14px/1.4 var(--font-cjk); color: #7a4a2a; }
+/* 全部 / 還沒有 / 已擁有 (long tabs only) */
+.cs-filter { display: flex; gap: 6px; margin: 0 0 10px; }
+.cs-chip { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 4px 6px; border: 3px solid var(--ink); border-radius: 999px; background: #f1e3c4; color: var(--ink);
+  box-shadow: 0 3px 0 var(--ink); font: 900 14px/1 var(--font-cjk); cursor: pointer; white-space: nowrap; }
+.cs-chip[aria-pressed="true"] { background: linear-gradient(#ffdc55, #ff9e22); color: var(--white); text-shadow: var(--ol-sm); }
+.cs-chip:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
 .cs-item { --rc: #8fd18a; position: relative; display: grid; grid-template-columns: 64px minmax(0, 1fr) auto; grid-template-areas: "pv info act";
   align-items: center; gap: 10px;
   padding: 7px 9px 7px 8px; background: var(--white); border: 3px solid var(--ink); border-radius: 16px; text-align: left;
@@ -48,6 +63,10 @@
 .cs-item.bought { animation: cs-pop 0.45s ease-out; }
 .cs-item.nope { animation: cs-nope 0.35s ease-in-out; }
 .cs-upgrade { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "info act"; }
+/* train liveries and banners are long strips: the picture spans the card, the text and button sit below */
+.cs-item.cs-wide { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "pv pv" "info act"; row-gap: 8px; }
+.cs-wide .cs-pv { width: 100%; height: 64px; }
+.cs-wide .cs-cv { object-fit: contain; }
 .cs-pv { grid-area: pv; }
 .cs-info { grid-area: info; }
 .cs-act { grid-area: act; }
@@ -57,7 +76,10 @@
 .cs-cv { display: block; width: 100%; height: 100%; }
 .cs-item[data-id^="c_"] .cs-pv { background: radial-gradient(circle at 50% 40%, #fff6d4, #ffd987); }
 .cs-icon { width: 80%; height: auto; max-height: 80%; object-fit: contain; filter: drop-shadow(0 3px 0 rgba(59, 29, 14, 0.35)); }
-.cs-new { position: absolute; top: 2px; left: 2px; padding: 2px 6px 1px; border: 2px solid var(--ink); border-radius: 999px; background: #ff3d5a;
+.cs-play { position: absolute; inset: 0; display: grid; place-items: end end; padding: 0; border: 0; background: transparent; cursor: pointer; }
+.cs-play svg { width: 26px; height: 26px; margin: 0 3px 3px 0; filter: drop-shadow(0 2px 0 rgba(0, 0, 0, 0.35)); }
+.cs-play:active svg { transform: scale(0.9); }
+.cs-new { pointer-events: none; position: absolute; top: 2px; left: 2px; padding: 2px 6px 1px; border: 2px solid var(--ink); border-radius: 999px; background: #ff3d5a;
   color: var(--white); font: 900 11px/1.1 var(--font-cjk); font-style: normal; text-shadow: none; }
 .cs-info { display: grid; gap: 3px; min-width: 0; }
 .cs-name { font: 900 16px/1.2 var(--font-cjk); overflow-wrap: anywhere; }
@@ -109,9 +131,10 @@
 .cs-arm input:checked + i { background: var(--teal); }
 .cs-arm input:checked + i::after { transform: translateX(16px); }
 
-.cs-buy:focus-visible, .cs-tab:focus-visible, .arm-btn:focus-visible, .cs-entry:focus-visible, .cs-reveal .btn:focus-visible {
+.cs-chip:focus-visible, .cs-buy:focus-visible, .cs-tab:focus-visible, .arm-btn:focus-visible, .cs-entry:focus-visible, .cs-reveal .btn:focus-visible {
   outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 7px var(--sun); }
 .cs-arm input:focus-visible + i { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 5px var(--sun); }
+.cs-play:focus-visible { outline: 3px solid var(--sun); outline-offset: -5px; }
 .cs-body:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; border-radius: 10px; }
 
 /* mystery-box result, over the card */
@@ -122,6 +145,7 @@
 .cs-reveal-box { display: grid; place-items: center; min-height: 128px; }
 .cs-rv-ico { width: 96px; height: 96px; object-fit: contain; filter: drop-shadow(0 5px 0 rgba(59, 29, 14, 0.3)); animation: cs-burst 0.55s cubic-bezier(0.2, 0.9, 0.3, 1.4) both; }
 .cs-rv-cv { width: 96px; height: 120px; border: 3px solid var(--ink); border-radius: 14px; animation: cs-burst 0.55s cubic-bezier(0.2, 0.9, 0.3, 1.4) both; }
+.cs-rv-cv.wide { width: 220px; height: 55px; }
 .cs-rv-title { min-height: 1.2em; font: 900 28px/1.15 var(--font-cjk); color: var(--tangerine); text-shadow: 0 2px 0 rgba(59, 29, 14, 0.2); }
 .cs-rv-text { min-height: 1.3em; font: 700 15px/1.4 var(--font-cjk); }
 .cs-rv-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 10px; margin-top: 4px; }
@@ -169,9 +193,12 @@
   .cs-item { grid-template-columns: 56px minmax(0, 1fr); grid-template-areas: "pv info" "pv act"; align-items: start; gap: 6px 10px; }
   .cs-upgrade { grid-template-columns: minmax(0, 1fr); grid-template-areas: "info" "act"; }
   .cs-pv { width: 56px; height: 70px; }
+  .cs-item.cs-wide { grid-template-columns: minmax(0, 1fr); grid-template-areas: "pv" "info" "act"; gap: 6px; }
+  .cs-wide .cs-pv { height: 56px; }
   .cs-act { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
   .cs-buy { min-width: 88px; }
-  /* five tabs are ~55 px wide here: the icon goes above the label */
+  /* six tabs are ~38-60 px wide here (a 320 px phone leaves 38): the icon goes above the label, the gaps shrink so a 2-character label always fits */
+  .cs-tabs { gap: 3px; }
   .cs-tab { flex-direction: column; gap: 2px; padding: 4px 2px 5px; font-size: 12px; }
   .cs-tab-ico { width: 18px; height: 18px; }
 }
@@ -186,6 +213,8 @@
   .cs-card .btn-alt { font-size: 17px; padding: 8px 22px 10px; }
   .cs-item { padding-block: 5px; }
   .cs-pv { width: 52px; height: 65px; }
+  .cs-wide .cs-pv { height: 48px; }
+  .cs-sec-h { padding-block: 3px 2px; }
   .arm-note, .arm-label { display: none; }
 }
 @media (max-height: 520px) and (min-width: 461px) {
@@ -195,11 +224,12 @@
 }
 @media (max-height: 520px) and (min-width: 640px) {
   .cs-card { width: min(820px, 100%); }
-  .cs-list { grid-template-columns: 1fr 1fr; }
+  .cs-grp { grid-template-columns: 1fr 1fr; }
+  .cs-filter { max-width: 420px; }
 }
 @media (max-height: 380px) { .cs-desc { display: none; } }
-/* the menu is tight on short portrait phones: a one-row strip */
-@media (max-height: 700px) { .arm-note { display: none; } .arm-strip { padding-block: 4px; } }
+/* the menu is tight on short portrait phones: a one-row strip; the shop keeps only the collection count of its sub line (a 320x568 phone shows 2 cards otherwise) */
+@media (max-height: 700px) { .arm-note { display: none; } .arm-strip { padding-block: 4px; } .cs-sub-t { display: none; } .card .cs-sub:not(:has(b:not(:empty))) { display: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   .cs-item.bought, .cs-item.nope, .cs-rv-box, .cs-rv-ico, .cs-rv-cv, .cs-bank.bump img { animation: none; }

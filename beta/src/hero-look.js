@@ -14,7 +14,7 @@
  * Look numbers must match LOOK in cosmetics.js (checked by tools/test_cosmetics.mjs).
  */
 
-export const HERO_LOOK_NAMES = ['', 'mono', 'vhs', 'neon', 'gold', 'holo', 'pixel', 'rainbow', 'cloak', 'glitch', 'negative', 'thermal', 'comic'];
+export const HERO_LOOK_NAMES = ['', 'mono', 'vhs', 'neon', 'gold', 'holo', 'pixel', 'rainbow', 'cloak', 'glitch', 'negative', 'thermal', 'comic', 'maillard', 'dopamine', 'ccd', 'y2k', 'jelly', 'marble', 'clay', 'sketch', 'vapor', 'glow'];
 
 // GLSL reserved words / names we must not use as identifiers: flat smooth centroid sample input output filter half
 // fixed long short packed buffer shared. Float literals everywhere (GLSL ES has no int -> float conversion).
@@ -257,6 +257,188 @@ vec4 heroLookColor(vec2 uv) {
   col = mix(col, col * 0.12, ink * step(0.02, rad));
   col = mix(col * smoothstep(0.0, 0.6, s.a), vec3(0.02), clamp(outl * 2.0, 0.0, 1.0));
   return vec4(col, max(s.a, clamp(outl * 1.6, 0.0, 1.0)));
+}`,
+
+  // 13 美拉德穿搭: luminance through a 4-stop brown ramp (#3b2316, #7a4a2a, #c08a5a, #f1d9b5), a little warm grain (slower in calm mode)
+  13: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float t = clamp((sqrt(clamp(heroLuma(s.rgb), 0.0, 1.0)) - 0.1) * 1.2, 0.0, 1.0) * 3.0;
+  vec3 c0 = vec3(0.044, 0.017, 0.008);
+  vec3 c1 = vec3(0.195, 0.069, 0.023);
+  vec3 c2 = vec3(0.527, 0.254, 0.102);
+  vec3 c3 = vec3(0.879, 0.694, 0.462);
+  vec3 c = t < 1.0 ? mix(c0, c1, t) : (t < 2.0 ? mix(c1, c2, t - 1.0) : mix(c2, c3, t - 2.0));
+  float tk = floor(heroT * mix(9.0, 2.0, heroCalm));
+  float grain = heroHash(floor(uv / (HERO_TEXEL * 2.0)) + tk * 7.0) - 0.5;
+  c = c * (1.0 + grain * 0.14) + vec3(1.0, 0.8, 0.55) * grain * 0.02;
+  return vec4(max(c, 0.0), s.a);
+}`,
+
+  // 14 多巴胺配色: the costume's brightness posterised into 5 bands, each band a candy colour (pastel-neon, +25 % saturation, a little gloss inside
+  // the band); hair, paw pads and the outline are not saturated bright costume pixels, so they keep their colour. Static: no flicker.
+  14: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  vec3 g = sqrt(max(s.rgb, 0.0));
+  float mx = max(g.r, max(g.g, g.b));
+  float sat = (mx - min(g.r, min(g.g, g.b))) / max(mx, 0.001);
+  float lv = clamp((heroLuma(g) - 0.35) / 0.45, 0.0, 0.999) * 5.0;
+  float band = floor(lv);
+  vec3 pal = band < 1.0 ? vec3(0.62, 0.45, 1.0) : (band < 2.0 ? vec3(1.0, 0.48, 0.74) : (band < 3.0 ? vec3(1.0, 0.72, 0.42) : (band < 4.0 ? vec3(1.0, 0.92, 0.45) : vec3(0.45, 1.0, 0.78))));
+  pal = clamp(mix(vec3(heroLuma(pal)), pal, 1.25), 0.0, 1.0) * (0.9 + 0.2 * fract(lv));
+  float m = smoothstep(0.35, 0.55, sat) * smoothstep(0.45, 0.6, mx);
+  return vec4(mix(s.rgb, pal * pal * 1.05, m), s.a);
+}`,
+
+  // 15 CCD 數位感: lifted, over-exposed highlights, warm cast, soft chroma noise, and a flash pop (0.12 s, +35 % exposure) once every 4 s (off in calm mode)
+  15: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float l = heroLuma(s.rgb);
+  vec3 g = sqrt(max(s.rgb, 0.0));
+  float tk = floor(heroT * mix(8.0, 2.0, heroCalm));
+  vec2 cell = floor(uv / (HERO_TEXEL * 2.0));
+  vec3 chroma = vec3(heroHash(cell + tk * 3.0), heroHash(cell + tk * 5.0 + 17.0), heroHash(cell + tk * 7.0 + 31.0)) - 0.5;
+  g = mix(g, vec3(1.0), 0.14 * smoothstep(0.45, 1.0, l * 2.0));
+  g = mix(g, vec3(l * 1.2), 0.12) * 0.88 + 0.1;
+  g = g * vec3(1.08, 1.0, 0.86) + chroma * 0.05;
+  float ph = mod(heroT, 4.0);
+  float pop = (1.0 - heroCalm) * step(ph, 0.12) * sin(ph / 0.12 * 3.14159);
+  g *= 1.0 + 0.35 * pop;
+  heroEmis = vec3(0.12, 0.11, 0.09) * pop * heroGlow;
+  return vec4(max(g * g, 0.0), s.a);
+}`,
+
+  // 16 Y2K 鍍鉻: luminance through a cool silver chrome ramp with reflection banding, a thin iridescent band sliding across (heroGlow scales the sheen)
+  16: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float t = clamp(heroLuma(s.rgb) * 1.9, 0.0, 1.0);
+  float refl = 0.5 + 0.5 * sin(t * 9.0 + uv.y * 7.0 - heroT * 0.4);
+  float u = clamp(t * 0.75 + refl * 0.3 - 0.05, 0.0, 1.0);
+  vec3 dark = vec3(0.015, 0.02, 0.035);
+  vec3 mid = vec3(0.3, 0.36, 0.5);
+  vec3 lite = vec3(0.85, 0.92, 1.05);
+  vec3 c = u < 0.5 ? mix(dark, mid, u * 2.0) : mix(mid, lite, (u - 0.5) * 2.0);
+  float sw = fract((dot(uv, vec2(0.7, 0.7)) - heroT * 0.3) / 1.7);
+  float band = smoothstep(0.0, 0.04, sw) * (1.0 - smoothstep(0.04, 0.15, sw));
+  vec3 irid = 0.5 + 0.5 * cos(6.2832 * (sw * 2.5 + vec3(0.0, 0.33, 0.67)));
+  c += irid * band * (0.25 + 0.75 * t) * 0.55;
+  heroEmis = (irid * band * 0.45 + vec3(0.75, 0.85, 1.0) * t * t * t * 0.18) * heroGlow;
+  return vec4(c, s.a);
+}`,
+
+  // 17 果凍貓: a translucent tinted jelly body (outline kept), a gentle wobble of the picture (at most 1.2 % of the quad) and a drifting specular blob
+  17: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  float amp = 0.012 * mix(1.0, 0.35, heroCalm);
+  vec2 p = clamp(uv + vec2(sin(uv.y * 18.0 + heroT * 5.0), cos(uv.x * 14.0 + heroT * 4.2)) * amp, 0.002, 0.998);
+  vec4 s = heroTex(p);
+  vec2 r = heroRing(p, 3.0);
+  float edge = s.a * (1.0 - r.x);
+  float l = heroLuma(s.rgb);
+  vec3 tint = vec3(1.0, 0.42, 0.36);
+  vec3 c = s.rgb * 0.5 + tint * (0.3 + 0.7 * sqrt(l)) * 0.55;
+  vec2 bp = vec2(0.5 + 0.2 * sin(heroT * 0.9), 0.3 + 0.12 * cos(heroT * 0.7));
+  float blob = (1.0 - smoothstep(0.0, 0.11, length((uv - bp) * vec2(1.0, 0.8)))) * s.a;
+  heroEmis = (tint * edge * 0.3 + vec3(1.0, 0.97, 0.95) * blob * 0.85) * heroGlow;
+  return vec4(c, s.a * mix(0.8, 1.0, edge));
+}`,
+  // 18 大理石雕像: luminance lifted into warm white stone, grey veins (two warped sine scales, kept off the carved outline), a soft specular sheen drifting slowly
+  18: /* glsl */`
+float heroVein(vec2 p) {
+  float w = sin(p.x * 3.1 + sin(p.y * 4.3) * 1.7) + sin(p.y * 2.3 - sin(p.x * 3.7) * 1.3);
+  return 1.0 - smoothstep(0.0, 0.18, abs(w));
+}
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float l = sqrt(clamp(heroLuma(s.rgb), 0.0, 1.0));
+  float vein = max(heroVein(uv * vec2(7.0, 8.5)), 0.6 * heroVein(uv * vec2(17.0, 21.0) + 3.1));
+  vec3 c = vec3(0.86, 0.85, 0.82) * (0.1 + l);
+  c = mix(c, vec3(0.36, 0.38, 0.42) * (0.3 + 0.7 * l), vein * 0.85 * smoothstep(0.1, 0.4, l));
+  float sw = fract((dot(uv, vec2(0.6, 0.8)) - heroT * 0.12) / 1.7);
+  float sheen = smoothstep(0.0, 0.25, sw) * (1.0 - smoothstep(0.25, 0.5, sw));
+  heroEmis = vec3(1.0, 0.98, 0.94) * (smoothstep(0.7, 1.0, l) * 0.1 + sheen * l * l * 0.08) * heroGlow;
+  return vec4(c, s.a);
+}`,
+
+  // 19 黏土動畫: flattened matte colours (less contrast, a little more saturation), thumbprint whorls + grain, a stop-motion wobble at 8 steps a second (static in calm mode)
+  19: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  float tk = floor(heroT * 8.0);
+  vec2 jit = (vec2(heroHash(vec2(tk, 1.0)), heroHash(vec2(tk, 2.0))) - 0.5) * 0.006 + vec2(sin(uv.y * 40.0 + tk * 1.3), cos(uv.x * 34.0 + tk * 0.9)) * 0.0025;
+  vec2 p = clamp(uv + jit * (1.0 - heroCalm), 0.002, 0.998);
+  vec4 s = heroTex(p);
+  vec3 g = sqrt(max(s.rgb, 0.0));
+  float l = heroLuma(g);
+  g = mix(vec3(l), g, 1.15);
+  g = 0.26 + g * 0.68;
+  vec2 q = uv * vec2(6.0, 7.5);
+  vec2 cell = floor(q);
+  vec2 f = fract(q) - 0.5 - (vec2(heroHash(cell), heroHash(cell + 7.7)) - 0.5) * 0.4;
+  float ridge = sin(length(f) * 38.0 + heroHash(cell + 3.3) * 6.2832) * (1.0 - smoothstep(0.25, 0.5, length(f)));
+  float grain = heroHash(floor(uv / (HERO_TEXEL * 3.0))) - 0.5;
+  g += ridge * 0.035 + grain * 0.05;
+  vec2 r = heroRing(p, 3.0);
+  g += 0.06 * s.a * (1.0 - r.x);
+  return vec4(max(g, 0.0) * max(g, 0.0), s.a);
+}`,
+
+  // 20 鉛筆素描: warm paper white, graphite hatching by luminance (one diagonal layer, a crossing layer, a third in the darks), a pencil outline, a 6 steps a second line boil (static in calm mode)
+  20: /* glsl */`
+float heroHatch(float v) {
+  float f = fract(v);
+  return smoothstep(0.37, 0.5, f) * (1.0 - smoothstep(0.5, 0.63, f));
+}
+vec4 heroLookColor(vec2 uv) {
+  float tk = floor(heroT * 6.0) * (1.0 - heroCalm);
+  vec2 p = clamp(uv + (vec2(heroHash(vec2(tk, 4.0)), heroHash(vec2(tk, 5.0))) - 0.5) * 0.004, 0.002, 0.998);
+  vec4 s = heroTex(p);
+  float l = sqrt(clamp(heroLuma(s.rgb), 0.0, 1.0));
+  vec2 g = p * vec2(46.0, 57.5);
+  float w = sin(p.y * 31.0 + tk) * 0.12 + sin(p.x * 23.0 - tk * 1.7) * 0.1;
+  float h1 = heroHatch((g.x + g.y) * 0.7071 + w);
+  float h2 = heroHatch((g.x - g.y) * 0.7071 + w * 1.3);
+  float h3 = heroHatch(g.y * 1.1 + w * 0.8);
+  float hatch = max(max(h1 * (1.0 - smoothstep(0.7, 0.9, l)), h2 * (1.0 - smoothstep(0.5, 0.66, l))), h3 * (1.0 - smoothstep(0.25, 0.4, l)));
+  float fibre = heroHash(floor(p / (HERO_TEXEL * 2.0))) - 0.5;
+  vec3 paper = vec3(0.86, 0.85, 0.8) * (0.95 + 0.1 * fibre);
+  vec2 r = heroRing(p, 2.0);
+  float outl = s.a * (1.0 - r.x);
+  float ink = clamp(hatch * 0.85 + outl * 0.9, 0.0, 1.0);
+  vec3 c = mix(paper * (0.86 + 0.14 * smoothstep(0.0, 0.7, l)), vec3(0.09, 0.09, 0.11), ink);
+  return vec4(c, s.a);
+}`,
+
+  // 21 蒸氣波: luminance through a violet -> hot pink -> cyan gradient map (cyan towards the top), scanlines, a slow light sweep down the body (off in calm mode)
+  21: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float t = clamp((sqrt(clamp(heroLuma(s.rgb), 0.0, 1.0)) - 0.15) * 1.4 + (uv.y - 0.5) * 0.55, 0.0, 1.0);
+  vec3 c0 = vec3(0.12, 0.02, 0.28);
+  vec3 c1 = vec3(1.0, 0.22, 0.62);
+  vec3 c2 = vec3(0.25, 0.9, 1.0);
+  vec3 c = t < 0.5 ? mix(c0, c1, t * 2.0) : mix(c1, c2, (t - 0.5) * 2.0);
+  c *= 0.8 + 0.2 * step(0.5, fract(uv.y * 90.0));
+  float sw = fract(uv.y * 0.9 + heroT * 0.18);
+  c *= 1.0 + 0.3 * (1.0 - heroCalm) * smoothstep(0.0, 0.08, sw) * (1.0 - smoothstep(0.08, 0.3, sw));
+  heroEmis = vec3(1.0, 0.4, 0.8) * smoothstep(0.55, 0.9, t) * 0.08 * heroGlow;
+  return vec4(c, s.a);
+}`,
+
+  // 22 夜光貼紙: a pale phosphor-green plastic body; the darker the zone tint (material.color: tunnels, 霓虹夜城, dusk) the stronger the green glow, rim glow included
+  22: /* glsl */`
+vec4 heroLookColor(vec2 uv) {
+  vec4 s = heroTex(uv);
+  float l = sqrt(clamp(heroLuma(s.rgb), 0.0, 1.0));
+  float dk = 1.0 - smoothstep(0.82, 0.98, heroLuma(diffuse));
+  vec3 c = mix(vec3(0.02, 0.05, 0.03), vec3(0.62, 0.85, 0.5), clamp(l * l * 1.4, 0.0, 1.0));
+  vec2 r = heroRing(uv, 3.0);
+  float rim = s.a * (1.0 - r.x);
+  float pulse = 0.94 + 0.06 * (1.0 - heroCalm) * sin(heroT * 1.6);
+  heroEmis = vec3(0.25, 1.0, 0.5) * ((0.35 + 0.65 * l) * (0.18 + dk) + rim * (0.3 + 0.7 * dk) * 0.8) * pulse * s.a * heroGlow;
+  return vec4(c, s.a);
 }`,
 };
 

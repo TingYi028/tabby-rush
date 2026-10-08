@@ -1,5 +1,5 @@
 /*
- * 更新日誌 (src/changelog.js): the changelog card, the version pill at the bottom of the menu, the one-time "已更新到 v1.x"
+ * 更新日誌 (src/changelog.js): the changelog card, the version pill in the menu's top-left corner, the one-time "已更新到 v1.x"
  * banner and the row in the 設定 card. Same sticker look as the help / board cards (ink outline, cream card, orange pills);
  * every class is cl-* so nothing else is touched. Uses the page's custom properties (--ink, --sun, --cream, --font-cjk ...).
  * The pill and the banner are positioned over the menu and take no room in its layout; they exist only while
@@ -43,7 +43,7 @@
 .cl-items li::before { content: ''; position: absolute; left: 3px; top: 0.5em; width: 9px; height: 9px; box-sizing: border-box;
   border: 2px solid var(--ink); border-radius: 50%; background: var(--tangerine); }
 
-/* ---------- the version pill (bottom right of the menu; the invisible ring around it makes the touch target 44 px) ---------- */
+/* ---------- the version pill (top left of the menu, next to the help button; the invisible ring around it makes the touch target 44 px) ---------- */
 body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banner { display: none; }
 .cl-ver { position: absolute; z-index: 3; left: calc(max(16px, env(safe-area-inset-left, 0px)) + 62px); top: calc(env(safe-area-inset-top, 0px) + 27px);
   display: inline-flex; align-items: center; justify-content: center; min-width: 46px; height: 28px; box-sizing: border-box; padding: 0 10px;
@@ -54,8 +54,9 @@ body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banne
 .cl-ver:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
 .cl-ver:focus-visible, .cl-bn-go:focus-visible, .cl-bn-x:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
 
-/* ---------- the "已更新到 v1.x" banner (bottom centre, over the menu; it leaves by itself) ---------- */
-.cl-banner { position: absolute; z-index: 4; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); transform: translateX(-50%);
+/* ---------- the "已更新到 v1.x" banner (top centre, over the menu's logo band: below the corner buttons, above 開始衝刺, so it never covers
+   a button or a chip; it leaves by itself after 8 s) ---------- */
+.cl-banner { position: absolute; z-index: 4; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 72px); transform: translateX(-50%);
   width: min(430px, calc(100% - 32px)); box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 16px;
   background: var(--cream); border: 3px solid var(--ink); border-radius: 22px;
   box-shadow: 0 5px 0 var(--ink), 0 14px 30px rgba(0, 0, 0, 0.25); animation: cl-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.25); }
@@ -68,7 +69,7 @@ body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banne
 .btn.cl-bn-go:active { transform: translateY(3px); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.12), 0 1px 0 var(--ink); }
 .icon-btn.cl-bn-x { flex: none; width: 44px; height: 44px; }
 .icon-btn.cl-bn-x svg { width: 20px; height: 20px; }
-@keyframes cl-in { from { opacity: 0; transform: translate(-50%, 24px) scale(0.94); } to { opacity: 1; transform: translateX(-50%); } }
+@keyframes cl-in { from { opacity: 0; transform: translate(-50%, -24px) scale(0.94); } to { opacity: 1; transform: translateX(-50%); } }
 
 /* ---------- the row in the 設定 card ---------- */
 .cl-set-row { width: 100%; cursor: pointer; font: inherit; color: inherit; touch-action: manipulation; }
@@ -88,8 +89,14 @@ body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banne
   .cl-card .btn-alt { font-size: 17px; padding: 8px 22px 10px; }
   .cl-toggle { min-height: 50px; padding-block: 5px; }
   .cl-items li { font-size: 13px; line-height: 1.4; }
-  .cl-banner { bottom: calc(env(safe-area-inset-bottom, 0px) + 8px); padding-block: 4px; }
+  .cl-banner { padding-block: 4px; }
   .cl-bn-sub { display: none; }
+}
+/* short landscape phones: one line between 怎麼玩 (left) and 設定 / 聲音 (right, 120 px from the edge), level with the corner buttons */
+@media (max-height: 420px) {
+  .cl-banner { top: calc(env(safe-area-inset-top, 0px) + 6px); padding-block: 2px;
+    width: min(360px, calc(100% - 2 * (max(16px, env(safe-area-inset-left, 0px), env(safe-area-inset-right, 0px)) + 112px))); }
+  .btn.cl-bn-go { padding: 4px 16px 6px; box-sizing: border-box; min-height: 44px; }   /* 查看 and × stay 44 px targets: the banner is ~54 px high, level with the corner buttons */
 }
 @media (max-height: 400px) { .cl-card > h2 { display: none; } }  /* the dialog keeps its name for screen readers */
 @media (max-height: 420px) and (min-aspect-ratio: 1001/1000) { .cl-ver { display: none; } }

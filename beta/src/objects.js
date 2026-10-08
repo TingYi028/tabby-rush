@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as C from './config.js';
 import { FXP } from './settings.js';
+import { PLACES } from './themes.js';
+import { onSetSwap, ACTIVE } from './zoneload.js';
 import { images, makeTexture } from './assets.js';
 import {
   TRAIN_VARIANTS, TRAIN_UV, PROP_UV, trainAtlasCanvas, propsAtlasCanvas, softDotCanvas, makeCanvas,
@@ -49,7 +51,45 @@ export function buildSharedMaterials() {
   const props = new THREE.MeshStandardMaterial({
     map: makeTexture(propsAtlasCanvas()), roughness: 0.55, metalness: 0.15,
   });
-  return { trainMats, props, glowTex: makeTexture(softDotCanvas()) };
+  // hurdles and overhead boards get a material of their own (same map, no extra texture): a place's skin swaps only theirs
+  const mats = { trainMats, props, barrier: props.clone(), glowTex: makeTexture(softDotCanvas()) };
+  const swap = (tex, set, uv) => setBarrierSkin(mats, tex, (PLACES.find((p) => p.set === set) || {}).skin, uv);
+  onSetSwap(swap);   // zoneload.js: fires whenever the place art on screen changes (skin = the new set's skin.webp texture or null)
+  if (ACTIVE.skin) swap(ACTIVE.skin, ACTIVE.set, ACTIVE.skinUV);
+  return mats;
+}
+
+const SKIN_PX = 256;   // the skin atlas: the props atlas at quarter size, so every prop UV rect lands on its own art
+// where each barrier face lives in a set's 256x256 skin.webp (pixels x, y, w, h; the same in every set) and which prop atlas rect it repaints
+const SKIN_FACES = { overhead: [0, 0, 256, 144, 'SIGN'], hurdle: [0, 160, 256, 36, 'STRIPE_RW'] };
+let skinTex = null;
+
+/**
+ * Obstacle skin of the place on screen (themes.js `skin`), or none (`tex` null): `tex` is the set's skin.webp texture
+ * (zoneload.js owns and disposes it; only its image is read here). `uv` = the set's atlas.json skin rects as texture rects
+ * (zoneload.js skinUV) say where the overhead board face and the hurdle bar face are in it; SKIN_FACES holds the fixed
+ * rects used for a face `uv` does not give (an atlas.json without a skin entry). Each face repaints its prop rect only when `skin` names it, drawn over the original art so
+ * transparent pixels keep it. The result is a quarter-size copy of the props atlas, so geometry, UVs, hit boxes, dark outline and warning lights
+ * stay exactly as they are; only the barrier material's map changes (never to or from null: no recompile) and the
+ * previous skin atlas is freed.
+ */
+export function setBarrierSkin(mats, tex, skin, uv = null) {
+  const old = skinTex, img = tex && tex.image;
+  skinTex = null;
+  let map = mats.props.map;
+  if (img && img.width && skin && (skin.hurdle || skin.overhead)) {
+    const c = makeCanvas(SKIN_PX, SKIN_PX), g = c.getContext('2d'), k = img.width / 256, kh = img.height / 256;
+    g.drawImage(map.image, 0, 0, SKIN_PX, SKIN_PX);
+    for (const name in SKIN_FACES) {
+      if (!skin[name]) continue;
+      const [x, y, w, h, rect] = SKIN_FACES[name], [u0, v0, u1, v1] = PROP_UV[rect], r = uv && uv[name];
+      const sx = r ? r.u * img.width : x * k, sy = r ? (1 - r.v - r.dv) * img.height : y * kh;
+      g.drawImage(img, sx, sy, r ? r.du * img.width : w * k, r ? r.dv * img.height : h * kh, u0 * SKIN_PX, (1 - v1) * SKIN_PX, (u1 - u0) * SKIN_PX, (v1 - v0) * SKIN_PX);
+    }
+    map = skinTex = makeTexture(c);
+  }
+  mats.barrier.map = map;
+  if (old) old.dispose();
 }
 
 /* ---------- trains ---------- */
@@ -224,7 +264,7 @@ export class Hurdle {
   constructor(mats) {
     if (!hurdleGeo) buildHurdle();
     this.group = new THREE.Group();
-    const m = new THREE.Mesh(hurdleGeo, mats.props);
+    const m = new THREE.Mesh(hurdleGeo, mats.barrier);
     m.castShadow = true;
     this.group.add(m, new THREE.Mesh(hurdleHull, OUTLINE), new THREE.Mesh(hurdleLights, blinkAmber));
   }
@@ -257,7 +297,7 @@ export class Overhead {
   constructor(mats) {
     if (!overGeo) buildOverhead();
     this.group = new THREE.Group();
-    const m = new THREE.Mesh(overGeo, mats.props);
+    const m = new THREE.Mesh(overGeo, mats.barrier);
     m.castShadow = true;
     this.group.add(m, new THREE.Mesh(overHull, OUTLINE), new THREE.Mesh(overLights, blinkRed));
   }
@@ -486,6 +526,11 @@ export class Coins {
     };
     spin(faceMat);
     spin(rimMat);
+    this.faceMat = faceMat;
+    this.baseTex = tex;   // the normal coin; kept so a shop coin face can be taken off again
+    this.frames = [];     // textures of the equipped coin face (setFace)
+    this.faceT = 0;
+    this.faceAt = -1;
     this.rim = new THREE.InstancedMesh(rimGeo, rimMat, this.cap);
     this.face = new THREE.InstancedMesh(faceGeo, faceMat, this.cap);
     for (const m of [this.rim, this.face]) {
@@ -503,6 +548,26 @@ export class Coins {
     this.dirty = true;
   }
   clear() { this.list.length = 0; this.dirty = true; }
+  /**
+   * Put a shop coin face (cosmetics kind `coin`) on every coin: `art` is a 128x128 canvas, a short list of them (a slow
+   * sparkle: they take turns every 0.5 s, and only the first shows with 減少閃爍) or null for the normal coin. Only the face
+   * material's map changes: rim, size, spin and the pick-up box stay as they are.
+   */
+  setFace(art) {
+    for (const t of this.frames) t.dispose();
+    this.frames = (Array.isArray(art) ? art : art ? [art] : []).slice(0, 4).map((c) => makeTexture(c));
+    this.faceT = 0;
+    this.faceAt = -1;
+    this.showFace(0);
+    this.faceMat.needsUpdate = true;
+  }
+  showFace(i) {
+    const m = this.faceMat, t = this.frames.length ? this.frames[i] : this.baseTex;
+    this.faceAt = i;
+    m.map = m.emissiveMap = t;
+    m.color.set(t ? 0xffffff : 0xffc933);
+    m.emissiveIntensity = t ? 0.35 : 0;
+  }
   /** Returns the collected coins' positions (track coordinates) for effects. */
   /**
    * `prevDist`: the hero's distance last frame (pickups cover the whole frame's travel, so low frame rates
@@ -511,6 +576,11 @@ export class Coins {
   update(dt, t, dist, px, py, magnet, prevDist = dist, collect = true) {
     const got = [];
     const L = this.list;
+    if (this.frames.length > 1) {   // sparkle face: the pictures take turns (the first only, calm)
+      this.faceT += dt;
+      const f = FXP.calm ? 0 : Math.floor(this.faceT * 2) % this.frames.length;
+      if (f !== this.faceAt) this.showFace(f);
+    }
     for (let i = L.length - 1; i >= 0; i--) {
       const c = L[i];
       if (c.s < dist - 12) { L[i] = L[L.length - 1]; L.pop(); this.dirty = true; continue; }

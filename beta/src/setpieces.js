@@ -1,6 +1,6 @@
 import * as C from './config.js';
 import { LaneArrows, ARROW_SPACING } from './objects.js';
-import { PEAK, peakBonus, peakWarn } from './peak.js';
+import { PEAK, peakBonus, peakParams, peakWarn } from './peak.js';
 
 /*
  * Set pieces, mixed into Spawner.prototype (hooks: reset, update, smash, genSlot in spawner.js).
@@ -16,7 +16,7 @@ import { PEAK, peakBonus, peakWarn } from './peak.js';
  * row and the normal wave resumes. The gate / breather / booking logic never runs inside it.
  *
  * Peak hour (尖峰時段, numbers in peak.js): after every 2nd rooftop segment, PEAK.rows denser rows (spawner.js genSlot,
- * director.js tuneRow) and a speed factor for the hero (main.js, via peakAt). Anchored to the rooftop schedule, so
+ * director.js tuneRow) and a speed factor for the hero (main.js, via peakSpeedAt). Anchored to the rooftop schedule, so
  * the two never overlap; telegraphed by the 'peak' events (warn / start / clear) from updateSigns.
  */
 
@@ -142,10 +142,21 @@ export const setPieces = {
     return this.roofSpans.some((r) => s >= r.from - C.SLOT && s < r.to + C.SLOT);
   },
 
-  /** Is track position `s` inside a generated peak hour? Per frame in main.js (the hero's speed factor): no allocation. */
+  /** The generated peak hour covering track position `s`, or null. Per row and per frame: no allocation. */
+  peakSpanAt(s) {
+    for (let i = 0; i < this.peakSpans.length; i++) if (s >= this.peakSpans[i].from && s < this.peakSpans[i].to) return this.peakSpans[i];
+    return null;
+  },
+
+  /** Is track position `s` inside a generated peak hour? */
   peakAt(s) {
-    for (let i = 0; i < this.peakSpans.length; i++) if (s >= this.peakSpans[i].from && s < this.peakSpans[i].to) return true;
-    return false;
+    return this.peakSpanAt(s) !== null;
+  },
+
+  /** The hero's run-speed factor at `s` (main.js, per frame): 1.08 in the first peak hour, 1.12 in later ones, 1 outside. */
+  peakSpeedAt(s) {
+    const p = this.peakSpanAt(s);
+    return p ? peakParams(p).speed : 1;
   },
 
   /** No jetpack from PEAK.jetMargin before a peak hour (pending or generated) to its end: it would fly over all of it. */

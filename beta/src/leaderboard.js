@@ -14,13 +14,20 @@ import { dayKey } from './daily.js';
  *
  * Global (optional): `assets/leaderboard.json` = { "provider": "supabase", "url": "https://<ref>.supabase.co",
  * "anonKey": "<public anon key>" } turns on the world board, backed by Postgres functions (tools/leaderboard.sql):
- *   tr_submit(p_client, p_name, p_score, p_dist, p_coins, p_secs, p_day) -> [{ o_board, o_rank, o_best }]
+ *   tr_submit(p_client, p_name, p_score, p_dist, p_coins, p_secs, p_day, p_run) -> [{ o_board, o_rank, o_best }]
  *   tr_top(p_board, p_limit, p_client)                                -> [{ o_name, o_score, o_dist, o_coins, o_at, o_me }]
  *   tr_rename(p_client, p_name)  (optional, tools/loop/requests.md)   -> name-only update of the player's rows
  * Boards: 'all' + 'week:IYYY-IW' (normal runs; tr_top takes 'week' for the current one) and 'day:YYYY-MM-DD'
  * (daily runs). Each player keeps one row per board (their best). Ranks tie like the server's: 1 + players with a
  * higher score (see rankOf in board-ui.js).
- * A run that can't be sent (offline) waits in `tabbyrush.board.pending` and goes out with the next one.
+ * A run waits in `tabbyrush.board.pending` from the moment it is sent until the server has it (so closing the page mid-request
+ * keeps it) and goes out again with the next one; only a validation answer (400 / 409 / 422) drops it.
+ * Every run has an `id` (uuid, made once, stored with the queue entry and sent as `p_run` on every retry): the server ignores
+ * a run id it has seen, so a resend after a lost answer changes nothing. A server that does not know `p_run` yet answers
+ * 404: the run is then sent without it (once per session, `noRunId`) and, as for any 404, stays queued if that fails too.
+ * The world board has three states (`remote.state`): 'on'; 'off' (no config file, or an invalid one: disabled, nothing is
+ * queued); 'later' (the config could not be fetched, e.g. the phone was offline at boot: runs finished meanwhile are queued
+ * like any unsent run, the fetch is repeated with a back-off, when the network returns and at the next submit / flush).
  *
  * Renaming (any screen -> settings.set('name')) is handled here, once, whichever screen it came from:
  *   - local rows take the new name at once (all of them: they are all this device's player);
@@ -55,13 +62,16 @@ export function playerName() {
   return settings.get('name') || `${DEFAULT_NAME}${clientId().replace(/\D/g, '').slice(0, 4).padEnd(4, '7')}`;
 }
 
+const uuid = () => (crypto.randomUUID ? crypto.randomUUID()
+  : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16)));
+const RUN_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** A random id for this browser (one row per player per global board). */
 export function clientId() {
   if (cid) return cid;
   let id = store.get('cid', '');
   if (!/^[0-9a-f-]{36}$/.test(id)) {
-    id = crypto.randomUUID ? crypto.randomUUID()
-      : '10000000-1000-4000-8000-100000000000'.replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+    id = uuid();
     store.set('cid', id);
   }
   return (cid = id);
@@ -121,16 +131,26 @@ function renameLocal() {
 /* ---------- global board ---------- */
 
 let cfg = null;
-export const remote = { on: false, ready: Promise.resolve(false) };
+export const remote = { on: false, ready: Promise.resolve(false), state: 'off' };   // state: 'on' | 'off' | 'later' (see above)
+/** `gap`: least ms between two fetches of a missing config that other code asks for; `delays`: the timed tries after the boot one. */
+export const configRetry = { gap: 5000, delays: [8000, 30000, 90000] };
+let cfgTimer = 0, cfgLoading = null, cfgAt = 0;
 
 function jwtRole(k) {
   try { return JSON.parse(atob(k.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).role; } catch { return ''; }
 }
 
-/** Read assets/leaderboard.json once at boot; the world board stays off unless it is valid. */
-export function initRemote() {
-  remote.ready = fetch('assets/leaderboard.json', { cache: 'no-cache' })
-    .then((r) => (r.ok ? r.json() : null))
+const setState = (state) => { remote.state = state; remote.on = state === 'on'; return remote.on; };
+
+/** Fetch and check assets/leaderboard.json: true when the world board is on. A fetch that fails is 'later', a bad or absent file 'off'. */
+function readConfig() {
+  cfgAt = Date.now();
+  return fetch('assets/leaderboard.json', { cache: 'no-cache' })
+    .then((r) => {
+      if (r.ok) return r.json();
+      if (r.status === 404 || r.status === 410) return null;   // no file: the world board was never set up
+      throw new Error(`config ${r.status}`);
+    })
     .then((c) => {
       const okUrl = c && typeof c.url === 'string' && (/^https:\/\/[a-z0-9-]+\.supabase\.co$/.test(c.url)
         || (c.test === true && /^http:\/\/127\.0\.0\.1:\d+$/.test(c.url)));
@@ -138,12 +158,54 @@ export function initRemote() {
         && (!c.anonKey.startsWith('eyJ') || jwtRole(c.anonKey) === 'anon');
       if (c && c.provider === 'supabase' && okUrl && okKey) {
         cfg = { url: c.url, key: c.anonKey };
-        remote.on = true;
+        return setState('on');
       }
-      return remote.on;
+      return setState('off');
     })
-    .catch(() => false);
+    .catch(() => { setState('later'); return false; });
+}
+
+/** Read assets/leaderboard.json once at boot; the world board stays off unless it is valid. */
+export function initRemote() {
+  remote.ready = readConfig().then((on) => { if (remote.state === 'later') timedRetry(0); return on; });
   return remote.ready;
+}
+
+/** Fetch the missing config again (one fetch at a time); `auto` = a timer or the network coming back: then queued runs go out. */
+function retryRemote(auto = false) {
+  if (remote.state !== 'later') return Promise.resolve(remote.on);
+  if (!cfgLoading) {
+    if (!auto && Date.now() - cfgAt < configRetry.gap) return Promise.resolve(false);
+    cfgLoading = readConfig().then((on) => {
+      cfgLoading = null;
+      remote.ready = Promise.resolve(on);
+      if (on && auto) flushPending().catch(() => {});
+      return on;
+    });
+  }
+  return cfgLoading;
+}
+
+function timedRetry(n) {
+  clearTimeout(cfgTimer);
+  if (n >= configRetry.delays.length) return;
+  cfgTimer = setTimeout(async () => {
+    await retryRemote(true);
+    if (remote.state === 'later') timedRetry(n + 1);
+  }, configRetry.delays[n]);
+  cfgTimer.unref?.(); // (node tests)
+}
+
+/** Stop the timed config tries (tests). */
+export function stopConfigRetry() { clearTimeout(cfgTimer); }
+
+/** Can the world board be used now? A config that could not be fetched is fetched again first (not more often than configRetry.gap). */
+async function live() {
+  return (await remote.ready) || (remote.state === 'later' && retryRemote());
+}
+
+if (typeof window !== 'undefined' && window.addEventListener) {
+  window.addEventListener('online', () => { if (remote.state === 'later') retryRemote(true); });
 }
 
 /** POST one Supabase RPC (9 s timeout). Throws an Error with `.status` / `.detail` on a refusal; also used by wish.js. */
@@ -190,9 +252,12 @@ export function weekKey(d = new Date()) {
  * week = { rank, best, wk } for normal runs) or null (off / offline / refused).
  * An unsent run is kept (best one per board, with the week it was earned in) and retried by flushPending().
  */
-export async function submitRemote({ score, dist, coins, secs, day = 0, wk = '' }) {
-  if (BETA || !(await remote.ready) || score <= 0) return null; // the beta build never posts to the world boards (channel.js)
-  const run = { score, dist, coins, secs: Math.max(1, Math.round(secs)), day, wk: wk || weekKey() };
+export async function submitRemote({ score, dist, coins, secs, day = 0, wk = '', id = '' }) {
+  if (BETA || score <= 0) return null; // the beta build never posts to the world boards (channel.js)
+  const up = await live();
+  if (!up && remote.state !== 'later') return null;   // disabled: nothing to send, nothing to queue
+  // a queued entry from before run ids, or with a tampered one, gets a fresh id here; keepPending() stores it for every later retry
+  const run = { score, dist, coins, secs: Math.max(1, Math.round(secs)), day, wk: wk || weekKey(), id: RUN_ID.test(id) ? id : uuid() };
   // A normal run queued in an earlier week would count in THIS week's board (the server dates it at arrival). It adds
   // nothing to the all-time board unless it beats the known all-time best: then drop it. (An all-time record from last
   // week still goes out; the server has no way yet to keep it off the weekly board, see requests.md.)
@@ -202,11 +267,24 @@ export async function submitRemote({ score, dist, coins, secs, day = 0, wk = '' 
   }
   const name = playerName();
   let sent = false;
+  const key = runKey(run);
+  keepPending(run); // write-ahead: a reload or a crash during the request keeps the run
+  if (!up) return null; // the config could not be fetched yet (offline at boot): the run waits in the queue for flushPending()
+  inflight.add(key);
   try {
-    const rows = await rpc('tr_submit', {
+    const body = {
       p_client: clientId(), p_name: name, p_score: Math.floor(score), p_dist: Math.floor(dist),
       p_coins: Math.floor(coins), p_secs: run.secs, p_day: day ? isoDay(day) : null,
-    });
+    };
+    let rows;
+    if (noRunId) rows = await rpc('tr_submit', body);
+    else {
+      try { rows = await rpc('tr_submit', { ...body, p_run: run.id }); } catch (e) {
+        if (e.status !== 404) throw e;
+        noRunId = true;   // the server has the 7-argument tr_submit only: send without the id (a failure here keeps the run queued as any 404)
+        rows = await rpc('tr_submit', body);
+      }
+    }
     dropPending(run);
     sent = true;
     const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
@@ -228,30 +306,49 @@ export async function submitRemote({ score, dist, coins, secs, day = 0, wk = '' 
     store.set('board.ranks', keep);
     return { rank: main ? main.rank : 0, best: main ? main.best : score, week };
   } catch (e) {
-    // 429 (rate limited), 5xx and network errors wait for a later try; other 4xx = refused for good
-    if (!(e.status >= 400 && e.status < 500) || e.status === 429) keepPending(run);
-    else dropPending(run, true);
+    // The run is queued already. Only a validation answer is refused for good; 404 (function missing), 401 / 403 (key refused),
+    // 429, 5xx and network errors are states that pass, and the run is still a valid one.
+    if (REFUSED.includes(e.status)) dropPending(run, true);
     return null;
   } finally {
+    inflight.delete(key);
     // The run carried the name to the all-time + weekly rows. Renamed meanwhile: the server holds the old name again.
     if (sent) { if (name !== playerName()) { setDirty(true); scheduleSync(); } else if (!day) setDirty(false); }
   }
 }
 
-function keepPending(run) {
+const REFUSED = [400, 409, 422];  // answers that mean "this run will never be accepted"
+const inflight = new Set();       // runs being sent right now (flushPending leaves them alone)
+const runKey = (run) => `${run.day}|${run.score}`;
+let noRunId = false;              // the server's tr_submit does not take p_run yet (404): runs go without it until a reload
+let memPending = null;            // session copy of the queue when storage refuses the write
+
+const loadPending = () => {
+  if (memPending) return memPending;
   const p = store.get('board.pending', []);
-  const list = Array.isArray(p) ? p.filter((x) => x && x.day !== run.day) : [];
-  const old = Array.isArray(p) ? p.find((x) => x && x.day === run.day) : null;
-  list.push(old && old.score >= run.score ? old : run);
-  store.set('board.pending', list.slice(-4));
+  return Array.isArray(p) ? p.filter((x) => x && typeof x === 'object') : [];
+};
+
+function savePending(list) {
+  store.set('board.pending', list);
+  // storage that refuses writes (full, blocked): this session's list wins until a write goes through again
+  memPending = JSON.stringify(store.get('board.pending', null)) === JSON.stringify(list) ? null : list;
+}
+
+function keepPending(run) {
+  const p = loadPending();
+  const list = p.filter((x) => x.day !== run.day);
+  const old = p.find((x) => x.day === run.day);
+  // (the entry kept is the same run when scores are equal: it takes this send's id if it had none; a better older run keeps its own)
+  const keep = old && old.score >= run.score ? (RUN_ID.test(old.id) ? old : { ...old, id: old.score === run.score ? run.id : uuid() }) : run;
+  list.push(keep);
+  savePending(list.slice(-4));
 }
 
 /** Sent (drops this and lower queued runs of its board) or refused for good (`exact`: just this one). */
 function dropPending(run, exact = false) {
-  const p = store.get('board.pending', []);
-  if (Array.isArray(p) && p.length) {
-    store.set('board.pending', p.filter((x) => x && !(x.day === run.day && (exact ? x.score === run.score : x.score <= run.score))));
-  }
+  const p = loadPending();
+  if (p.length) savePending(p.filter((x) => !(x.day === run.day && (exact ? x.score === run.score : x.score <= run.score))));
 }
 
 let flushing = false, flushAgain = false;
@@ -261,18 +358,16 @@ let flushing = false, flushAgain = false;
  * more (new entries wait in it).
  */
 export async function flushPending() {
-  if (!(await remote.ready)) return;
+  if (!(await live())) return;
   if (flushing) { flushAgain = true; return; }
   flushing = true;
   try {
     do {
       flushAgain = false;
-      const p = store.get('board.pending', []);
-      for (const run of Array.isArray(p) ? p : []) {
-        if (!run || !(run.score > 0)) continue;
+      for (const run of loadPending()) {
+        if (!(run.score > 0) || inflight.has(runKey(run))) continue;
         await submitRemote(run);
-        const left = store.get('board.pending', []);
-        if (Array.isArray(left) && left.some((x) => x && x.day === run.day && x.score === run.score)) return; // offline / throttled
+        if (loadPending().some((x) => x.day === run.day && x.score === run.score)) return; // offline / throttled / server trouble
       }
     } while (flushAgain);
   } finally { flushing = false; }
@@ -305,7 +400,7 @@ let debounceT = 0, retryT = 0, pushing = false, noRenameRpc = false, settle = nu
 export const nameSynced = () => syncing;
 
 function scheduleSync() {
-  if (!remote.on || !onServer()) { setDirty(false); say('done'); return; } // nothing on a world board to rename
+  if ((!remote.on && remote.state !== 'later') || !onServer()) { setDirty(false); say('done'); return; } // nothing on a world board to rename
   if (!settle) syncing = new Promise((r) => { settle = r; });
   say('syncing');
   clearTimeout(debounceT);
@@ -332,7 +427,11 @@ async function pushName() {
   const name = playerName();
   let again = false;
   try {
-    if (BETA || !isDirty() || !(await remote.ready) || !onServer()) { setDirty(false); say('done'); return; } // beta: renames stay local
+    if (BETA || !isDirty() || !onServer()) { setDirty(false); say('done'); return; } // beta: renames stay local
+    if (!(await live())) {
+      if (remote.state === 'later') { say('later'); return; } // offline at boot: the name goes out once the config is there (flushPending)
+      setDirty(false); say('done'); return;
+    }
     if (noRenameRpc) { say('later'); return; }
     say('syncing');
     await rpc('tr_rename', { p_client: clientId(), p_name: name });
@@ -372,7 +471,7 @@ export function myRemoteRank(board) {
  * tag = the server's 4-digit player number ('' from an older server), shown after the name to tell same names apart.
  */
 export async function fetchRemote(board, limit = 50) {
-  if (!(await remote.ready)) return [];
+  if (!(await live())) return [];
   const rows = await rpc('tr_top', { p_board: board, p_limit: limit, p_client: clientId() });
   // the player's own rows wear the current name even before the server has heard it (a rename, a fetch that was in flight)
   const list = (Array.isArray(rows) ? rows : []).map((r) => ({

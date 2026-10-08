@@ -1,11 +1,14 @@
 import { makeCanvas } from './textures.js';
+import { FXP } from './settings.js';
 
 /*
- * Procedural 2D art for the shop (src/shop-ui.js) and the world (companions.js / fx.js textures): no image files.
+ * 2D art for the shop (src/shop-ui.js) and the world (companions.js / hats.js / fx.js textures): procedural, except the
+ * image sheets of the r03 pets (assets/pets) and hats (assets/hats), which load lazily and fall back to a placeholder.
  *  - LookPreview: the real hero frame run through a CPU port of the look shaders (hero-look.js), animated
  *  - drawTrailPreview: small animated particle swatches for the trails
- *  - companionSheet / drawCompanionPreview: the companions' sprite sheets (two frames side by side)
- *  - spriteCanvas: particle textures (coin, bone) and the ground paw print
+ *  - companionSheet / drawCompanionPreview: the companions' sprite sheets (frames side by side; image pets: PET_ART)
+ *  - drawHatPreview: a hat on the hero's head (real run_01 frame, hat sprite from HAT_ART)
+ *  - spriteCanvas: particle textures (coin, bone, heart, zzz, ribbon, ...) and the ground paw print
  * Everything draws in the cartoon style of the game: thick dark outline (#3b1d0e), bright flat fills.
  */
 
@@ -15,6 +18,84 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const fract = (v) => v - Math.floor(v);
 const mix = (a, b, t) => a + (b - a) * t;
 const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+/* ---------- lazily loaded image art: r03 pets (assets/pets) and hats (assets/hats) ---------- */
+
+const IMG_CACHE = new Map();   // url -> { img: HTMLImageElement | null, p: Promise }
+
+/** Load an image file once (never at boot: pets / hats call this when equipped or shown). Resolves null when it is missing. */
+export function loadArt(url) {
+  let e = IMG_CACHE.get(url);
+  if (!e) {
+    e = { img: null, p: null };
+    e.p = typeof Image === 'undefined' ? Promise.resolve(null) : new Promise((res) => {
+      const im = new Image();
+      im.onload = () => { e.img = im; res(im); };
+      im.onerror = () => res(null);
+      im.src = url;
+    });
+    IMG_CACHE.set(url, e);
+  }
+  return e.p;
+}
+/** The loaded image of `url`, or null while it loads / when it is missing (starts the load on first call). */
+export function artReady(url) { loadArt(url); return IMG_CACHE.get(url).img; }
+
+// Image-sheet companions: frames (256 px each, side by side), placeholder colour, preview frame rate
+export const PET_ART = {
+  shiba: { frames: 2, col: '#f5a04a', prev: 2.5 },
+  muyu: { frames: 2, col: '#a8683a', prev: 2.5 },
+  capy: { frames: 2, col: '#b98a5a', prev: 1.2 },
+  boba: { frames: 2, col: '#e9c79a', prev: 3 },
+  saltfish: { frames: 2, col: '#c9a35c', prev: 0.7 },
+  ox: { frames: 2, col: '#b9764a', prev: 1.2 },
+  pudding: { frames: 4, col: '#f6c453', prev: 5 },
+  xlb: { frames: 2, col: '#f3deb0', prev: 3 },
+  mochi: { frames: 2, col: '#f6efe6', prev: 2.5 },
+  pigeon: { frames: 2, col: '#9aa0b4', prev: 2.5 },
+  robovac: { frames: 2, col: '#c8e6e0', prev: 3 },
+  sweetpotato: { frames: 2, col: '#e0a030', prev: 3 },
+  puffer: { frames: 2, col: '#f5b32e', prev: 1.6 },
+  panda: { frames: 2, col: '#e9e9ee', prev: 2.5 },
+  penguin: { frames: 2, col: '#4a5568', prev: 1.4 },
+};
+export const COMPANION_IMG = Object.keys(PET_ART);
+export const petFrames = (fx) => (PET_ART[fx] ? PET_ART[fx].frames : 2);
+export const petSheetUrl = (fx) => `assets/pets/pet_${fx}.webp`;
+
+// Hat sprites: 256 px frames (side by side when a hat has 2). size = quad side in metres at head scale 1, lift = metres
+// above the hair crown (negative: sunk onto the head, e.g. the headphones' cups); the art's bottom edge sits ART_BASE of the
+// quad above its lower edge. pulse: depth of a gentle opacity pulse (it dips by 2 x pulse) with a 2 cm bob (static with 減少閃爍). fps: the 2 frames loop at
+// that rate (frame 1 only with 減少閃爍); without fps a 2-frame hat is the chick's blink.
+export const HAT_ART = {
+  party: { frames: 1, size: 0.7, lift: 0 },
+  sprout: { frames: 1, size: 0.7, lift: 0 },
+  hardhat: { frames: 1, size: 0.7, lift: 0 },
+  maid: { frames: 1, size: 0.7, lift: 0 },
+  chick: { frames: 2, size: 0.7, lift: 0 },
+  crown: { frames: 1, size: 0.7, lift: 0 },
+  halo: { frames: 1, size: 0.7, lift: 0.17, pulse: 0.12 },
+  chef: { frames: 1, size: 0.7, lift: -0.04 },
+  headphones: { frames: 1, size: 0.7, lift: -0.2 },
+  propeller: { frames: 2, size: 0.7, lift: 0, fps: 8 },
+  flowers: { frames: 1, size: 0.7, lift: -0.1 },
+  grad: { frames: 1, size: 0.7, lift: -0.04 },
+  bow: { frames: 1, size: 0.7, lift: -0.06 },
+  noodle: { frames: 1, size: 0.7, lift: -0.03 },
+  cap: { frames: 1, size: 0.7, lift: -0.08 },
+  bun: { frames: 1, size: 0.7, lift: 0 },
+  lamp: { frames: 1, size: 0.7, lift: 0, pulse: 0.07 },
+};
+export const HAT_FX = Object.keys(HAT_ART);
+export const ART_BASE = 8 / 256;
+/** Pure: which frame of hat `fx` shows `t` seconds in: the chick blinks for 0.15 s every 3.2 s, an `fps` hat loops (frame 0 with 減少閃爍). */
+export function hatFrame(fx, t) {
+  const art = HAT_ART[fx];
+  if (!art || art.frames < 2) return 0;
+  if (art.fps) return FXP.calm ? 0 : Math.floor(t * art.fps) % art.frames;
+  return t % 3.2 > 3.05 ? 1 : 0;
+}
+export const hatSheetUrl = (fx) => `assets/hats/hat_${fx}.webp`;
 
 /* ---------- look previews (CPU port of hero-look.js, in linear light like the shader) ---------- */
 
@@ -220,6 +301,95 @@ export class LookPreview {
         const o = clamp(outl * 2, 0, 1), cv = smooth(0, 0.6, a);
         return [mix(c[0] * cv, 0.02, o), mix(c[1] * cv, 0.02, o), mix(c[2] * cv, 0.02, o), Math.max(a, clamp(outl * 1.6, 0, 1))];
       }
+      case 13: { // 美拉德穿搭
+        const t3 = clamp((Math.sqrt(clamp(l, 0, 1)) - 0.1) * 1.2, 0, 1) * 3, k = Math.min(2, Math.floor(t3)), f = t3 - k;
+        const R = [[0.044, 0.017, 0.008], [0.195, 0.069, 0.023], [0.527, 0.254, 0.102], [0.879, 0.694, 0.462]];
+        const tk = Math.floor(t * mix(9, 2, cm)), gr = hash2(Math.floor(x / 1.2) + tk * 7, Math.floor(y / 1.2)) - 0.5;
+        const c = [0, 1, 2].map((i) => Math.max(0, mix(R[k][i], R[k + 1][i], f) * (1 + gr * 0.14) + [1, 0.8, 0.55][i] * gr * 0.02));
+        return [c[0], c[1], c[2], a];
+      }
+      case 14: { // 多巴胺配色
+        const gr = [Math.sqrt(Math.max(r, 0)), Math.sqrt(Math.max(g, 0)), Math.sqrt(Math.max(b, 0))];
+        const mx = Math.max(...gr), sat = (mx - Math.min(...gr)) / Math.max(mx, 0.001), lv = clamp((luma(gr[0], gr[1], gr[2]) - 0.35) / 0.45, 0, 0.999) * 5;
+        const PAL = [[0.62, 0.45, 1], [1, 0.48, 0.74], [1, 0.72, 0.42], [1, 0.92, 0.45], [0.45, 1, 0.78]], p = PAL[Math.floor(lv)], pl = luma(p[0], p[1], p[2]);
+        const m = smooth(0.35, 0.55, sat) * smooth(0.45, 0.6, mx), gl = 0.9 + 0.2 * fract(lv);
+        const cd = p.map((q) => { const e = clamp(mix(pl, q, 1.25), 0, 1) * gl; return e * e * 1.05; });
+        return [mix(r, cd[0], m), mix(g, cd[1], m), mix(b, cd[2], m), a];
+      }
+      case 15: { // CCD 數位感
+        const tk = Math.floor(t * mix(8, 2, cm)), cx = Math.floor(x / 1.2), cy = Math.floor(y / 1.2);
+        const ch = [hash2(cx + tk * 3, cy) - 0.5, hash2(cx + tk * 5 + 17, cy) - 0.5, hash2(cx + tk * 7 + 31, cy) - 0.5];
+        const lift = 0.14 * smooth(0.45, 1, l * 2), ph = t % 4, pop = (1 - cm) * (ph <= 0.12 ? Math.sin(ph / 0.12 * 3.14159) : 0);
+        const ex = 1 + 0.35 * pop, cast = [1.08, 1, 0.86], gg = [Math.sqrt(Math.max(r, 0)), Math.sqrt(Math.max(g, 0)), Math.sqrt(Math.max(b, 0))];
+        const c = gg.map((q, i) => { const e = (mix(mix(q, 1, lift), l * 1.2, 0.12) * 0.88 + 0.1) * cast[i] + ch[i] * 0.05; return Math.max(0, e * ex) ** 2; });
+        em[0] = 0.12 * pop * glow; em[1] = 0.11 * pop * glow; em[2] = 0.09 * pop * glow;
+        return [c[0], c[1], c[2], a];
+      }
+      case 16: { // Y2K 鍍鉻
+        const tt = clamp(l * 1.9, 0, 1), refl = 0.5 + 0.5 * Math.sin(tt * 9 + v * 7 - t * 0.4), uu = clamp(tt * 0.75 + refl * 0.3 - 0.05, 0, 1);
+        const D = [0.015, 0.02, 0.035], M = [0.3, 0.36, 0.5], L = [0.85, 0.92, 1.05];
+        const sw = fract((u * 0.7 + v * 0.7 - t * 0.3) / 1.7), band = smooth(0, 0.04, sw) * (1 - smooth(0.04, 0.15, sw));
+        const irid = [0, 0.33, 0.67].map((o) => 0.5 + 0.5 * Math.cos(TAU * (sw * 2.5 + o)));
+        const c = [0, 1, 2].map((i) => (uu < 0.5 ? mix(D[i], M[i], uu * 2) : mix(M[i], L[i], (uu - 0.5) * 2)) + irid[i] * band * (0.25 + 0.75 * tt) * 0.55);
+        const sheen = tt * tt * tt * 0.18;
+        em[0] = (irid[0] * band * 0.45 + 0.75 * sheen) * glow; em[1] = (irid[1] * band * 0.45 + 0.85 * sheen) * glow; em[2] = (irid[2] * band * 0.45 + sheen) * glow;
+        return [c[0], c[1], c[2], a];
+      }
+      case 17: { // 果凍貓
+        const amp = 0.012 * mix(1, 0.35, cm) * 512 / Z;
+        s = this.sample(x + Math.sin(v * 18 + t * 5) * amp, y + Math.cos(u * 14 + t * 4.2) * amp);
+        const rg = this.ring(x + Math.sin(v * 18 + t * 5) * amp, y + Math.cos(u * 14 + t * 4.2) * amp, 1.2), edge = s[3] * (1 - rg[0]);
+        const ll = Math.sqrt(luma(s[0], s[1], s[2])), T = [1, 0.42, 0.36];
+        const bx = 0.5 + 0.2 * Math.sin(t * 0.9), by = 0.3 + 0.12 * Math.cos(t * 0.7), dd = Math.hypot(u - bx, (v - by) * 0.8);
+        const blob = (1 - smooth(0, 0.11, dd)) * s[3];
+        const c = [0, 1, 2].map((i) => [s[0], s[1], s[2]][i] * 0.5 + T[i] * (0.3 + 0.7 * ll) * 0.55);
+        em[0] = (T[0] * edge * 0.3 + blob * 0.85) * glow; em[1] = (T[1] * edge * 0.3 + blob * 0.82) * glow; em[2] = (T[2] * edge * 0.3 + blob * 0.81) * glow;
+        return [c[0], c[1], c[2], s[3] * mix(0.8, 1, edge)];
+      }
+      case 18: { // 大理石雕像
+        const ll = Math.sqrt(clamp(l, 0, 1)), vein = (px, py) => { const w = Math.sin(px * 3.1 + Math.sin(py * 4.3) * 1.7) + Math.sin(py * 2.3 - Math.sin(px * 3.7) * 1.3); return 1 - smooth(0, 0.18, Math.abs(w)); };
+        const vn = Math.max(vein(u * 7 * 1.6, v * 8.5 * 1.6), 0.6 * vein(u * 17 * 1.6 + 3.1, v * 21 * 1.6 + 3.1)), k = 0.1 + ll;
+        const vm = vn * 0.85 * smooth(0.1, 0.4, ll), vc = [0.36, 0.38, 0.42], st = [0.86, 0.85, 0.82];
+        const sw = fract((u * 0.6 + v * 0.8 - t * 0.12) / 1.7), sheen = smooth(0, 0.25, sw) * (1 - smooth(0.25, 0.5, sw)), e = (smooth(0.7, 1, ll) * 0.1 + sheen * ll * ll * 0.08) * glow;
+        em[0] = e; em[1] = e * 0.98; em[2] = e * 0.94;
+        return [0, 1, 2].map((i) => mix(st[i] * k, vc[i] * (0.3 + 0.7 * ll), vm)).concat([a]);
+      }
+      case 19: { // 黏土動畫
+        const tk = Math.floor(t * 8), f = 1 - cm;
+        s = this.sample(x + ((hash2(tk, 1) - 0.5) * 0.006 + Math.sin(v * 40 + tk * 1.3) * 0.0025) * f * 512 / Z, y + ((hash2(tk, 2) - 0.5) * 0.006 + Math.cos(u * 34 + tk * 0.9) * 0.0025) * f * 512 / Z);
+        const gg = [Math.sqrt(Math.max(s[0], 0)), Math.sqrt(Math.max(s[1], 0)), Math.sqrt(Math.max(s[2], 0))], gl = luma(gg[0], gg[1], gg[2]);
+        const qx = u * 6 * 1.5, qy = v * 7.5 * 1.5, cx = Math.floor(qx), cy = Math.floor(qy);
+        const fx = fract(qx) - 0.5 - (hash2(cx, cy) - 0.5) * 0.4, fy = fract(qy) - 0.5 - (hash2(cx + 7.7, cy + 7.7) - 0.5) * 0.4, fl = Math.hypot(fx, fy);
+        const ridge = Math.sin(fl * 38 + hash2(cx + 3.3, cy + 3.3) * 6.2832) * (1 - smooth(0.25, 0.5, fl)), grain = hash2(Math.floor(x / 1.5), Math.floor(y / 1.5)) - 0.5;
+        const rg = this.ring(x, y, 1.4), edge = s[3] * (1 - rg[0]);
+        const c = gg.map((q) => { const e = 0.26 + mix(gl, q, 1.15) * 0.68 + ridge * 0.035 + grain * 0.05 + 0.06 * edge; return Math.max(e, 0) ** 2; });
+        return [c[0], c[1], c[2], s[3]];
+      }
+      case 20: { // 鉛筆素描
+        const tk = Math.floor(t * 6) * (1 - cm), ll = Math.sqrt(clamp(l, 0, 1));
+        const w = Math.sin(v * 31 + tk) * 0.12 + Math.sin(u * 23 - tk * 1.7) * 0.1, gx = u * 46 * 0.75, gy = v * 57.5 * 0.75;
+        const hatch = (q) => smooth(0.37, 0.5, fract(q)) * (1 - smooth(0.5, 0.63, fract(q)));
+        const ht = Math.max(Math.max(hatch((gx + gy) * 0.7071 + w) * (1 - smooth(0.7, 0.9, ll)), hatch((gx - gy) * 0.7071 + w * 1.3) * (1 - smooth(0.5, 0.66, ll))), hatch(gy * 1.1 + w * 0.8) * (1 - smooth(0.25, 0.4, ll)));
+        const fibre = hash2(Math.floor(x / 1.2), Math.floor(y / 1.2)) - 0.5, rg = this.ring(x, y, 1.1), outl = a * (1 - rg[0]);
+        const ink = clamp(ht * 0.85 + outl * 0.9, 0, 1), pp = (0.95 + 0.1 * fibre) * (0.86 + 0.14 * smooth(0, 0.7, ll)), PC = [0.86, 0.85, 0.8], IN = [0.09, 0.09, 0.11];
+        return [0, 1, 2].map((i) => mix(PC[i] * pp, IN[i], ink)).concat([a]);
+      }
+      case 21: { // 蒸氣波
+        const vy = 1 - v, tt = clamp((Math.sqrt(clamp(l, 0, 1)) - 0.15) * 1.4 + (vy - 0.5) * 0.55, 0, 1);
+        const C0 = [0.12, 0.02, 0.28], C1 = [1, 0.22, 0.62], C2 = [0.25, 0.9, 1];
+        const sl = 0.8 + 0.2 * (fract(y / 2.2) >= 0.5 ? 1 : 0), sw = fract(vy * 0.9 + t * 0.18), bd = 1 + 0.3 * (1 - cm) * smooth(0, 0.08, sw) * (1 - smooth(0.08, 0.3, sw));
+        const c = [0, 1, 2].map((i) => (tt < 0.5 ? mix(C0[i], C1[i], tt * 2) : mix(C1[i], C2[i], (tt - 0.5) * 2)) * sl * bd), e = smooth(0.55, 0.9, tt) * 0.08 * glow;
+        em[0] = e; em[1] = e * 0.4; em[2] = e * 0.8;
+        return [c[0], c[1], c[2], a];
+      }
+      case 22: { // 夜光貼紙 (the shop preview sits in "the dark": the zone tint is stood in for by a slow swell of the darkness)
+        const ll = Math.sqrt(clamp(l, 0, 1)), dk = 0.85 - 0.25 * (1 - cm) * (0.5 + 0.5 * Math.sin(t * 0.9));
+        const rg = this.ring(x, y, 1.4), rim = a * (1 - rg[0]), pulse = 0.94 + 0.06 * (1 - cm) * Math.sin(t * 1.6);
+        const e = ((0.35 + 0.65 * ll) * (0.18 + dk) + rim * (0.3 + 0.7 * dk) * 0.8) * pulse * a * glow;
+        em[0] = 0.25 * e; em[1] = e; em[2] = 0.5 * e;
+        const lk = clamp(ll * ll * 1.4, 0, 1);
+        return [mix(0.02, 0.62, lk), mix(0.05, 0.85, lk), mix(0.03, 0.5, lk), a];
+      }
       default: return [r, g, b, a];
     }
   }
@@ -279,7 +449,24 @@ export function drawTrailPreview(g, fx, t, w, h) {
       for (let k = -1; k <= 2; k++) { g.beginPath(); g.arc(px + (k - 0.5) * 3.2, y - 5 - (k === 0 || k === 1 ? 1 : 0), 1.5, 0, TAU); g.fill(); }
     }
   } else {
-    const N = fx === 'galaxy' ? 40 : fx === 'rainbow' ? 0 : 18;
+    const N = fx === 'galaxy' ? 40 : fx === 'rainbow' || fx === 'danmaku' || fx === 'merit' ? 0 : fx === 'zzz' ? 5 : fx === 'heart' ? 9 : fx === 'confetti' ? 26 : 18;
+    if (fx === 'danmaku') {
+      // comments scroll sideways in two lanes below / beside the hero, never over it
+      g.font = '900 9px "Noto Sans TC", "Microsoft JhengHei", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+      for (let i = 0; i < 5; i++) {
+        const ph = fract(t * 0.32 + i * 0.37), y = top + 24 + (i % 2) * 13, x = w + 12 - ph * (w + 40), word = TRAIL_TEXT.danmaku[i];
+        g.globalAlpha = 1; g.lineWidth = 2.6; g.strokeStyle = INK; g.strokeText(word, x, y); g.fillStyle = '#fff'; g.fillText(word, x, y);
+      }
+    }
+    if (fx === 'merit') {
+      g.font = '900 9px "Noto Sans TC", "Microsoft JhengHei", sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.lineJoin = 'round';
+      const ph = fract(t / 0.9);
+      g.globalAlpha = 1 - ph * ph; g.lineWidth = 2.6; g.strokeStyle = INK;
+      g.strokeText(TRAIL_TEXT.merit, cx, top - 18 - ph * 10); g.fillStyle = '#ffd23f'; g.fillText(TRAIL_TEXT.merit, cx, top - 18 - ph * 10);
+      const rp = fract(t / 0.45);
+      g.globalAlpha = 1 - rp; g.strokeStyle = '#ffd23f'; g.lineWidth = 1.6;
+      g.beginPath(); g.ellipse(cx, top + 22, 5 + rp * 12, 2 + rp * 4, 0, 0, TAU); g.stroke();
+    }
     if (fx === 'rainbow') {
       for (let b = 0; b < SPECTRUM.length; b++) {
         g.strokeStyle = SPECTRUM[b];
@@ -336,6 +523,28 @@ export function drawTrailPreview(g, fx, t, w, h) {
           x = cx + Math.cos(ang) * rad * 0.9; y = top + 8 + ph * (h - top - 10) + Math.sin(ang) * rad * 0.25;
           sz = 1.6 * (1 - ph) + 0.5; col = ['#7fd8ff', '#ff7ad9', '#fff4c2', '#a58bff'][i % 4];
           break;
+        }
+        case 'heart': {
+          x = cx + (seed - 0.5) * 24 + Math.sin(t * 2 + i) * 2; y = top + 4 + ph * (h - top - 6); sz = 2.6 + seed * 1.6;
+          g.globalAlpha = alpha; g.fillStyle = '#ff5f93'; g.strokeStyle = INK; g.lineWidth = 1;
+          heartPath(g, x, y, sz); g.fill(); g.stroke();
+          if (i % 8 === 0) { g.strokeStyle = '#ffd9b8'; g.lineWidth = 1.4; g.beginPath(); g.moveTo(x - 2, y + sz * 1.6); g.lineTo(x + 2, y + sz * 0.7); g.moveTo(x + 2, y + sz * 1.6); g.lineTo(x - 2, y + sz * 0.7); g.stroke(); }
+          continue;
+        }
+        case 'zzz': {
+          x = cx + 6 + i * 2.2 - ph * 4; y = top - 4 - ph * 22 + (i % 3) * 8; sz = 2.4 + (i % 3) * 1.4;
+          g.globalAlpha = Math.min(1, ph * 6) * (1 - ph) * 1.3; g.fillStyle = '#c9b6ff'; g.strokeStyle = INK; g.lineWidth = 0.9;
+          g.beginPath(); g.moveTo(x - sz, y - sz); g.lineTo(x + sz, y - sz); g.lineTo(x - sz, y + sz); g.lineTo(x + sz, y + sz); g.closePath(); g.fill(); g.stroke();
+          continue;
+        }
+        case 'confetti': {
+          x = cx + (seed - 0.5) * 34 + Math.sin(t * 3 + i) * 3; y = top + 2 + ph * (h - top - 4);
+          g.globalAlpha = Math.min(1, alpha * 1.6); g.fillStyle = SPECTRUM[i % 6]; g.strokeStyle = SPECTRUM[i % 6];
+          g.save(); g.translate(x, y); g.rotate(a0 + t * 4);
+          if (i % 2) g.fillRect(-2, -1.5, 4, 3);
+          else { g.lineWidth = 1.6; g.beginPath(); g.moveTo(-4, 0); g.quadraticCurveTo(-2, -3, 0, 0); g.quadraticCurveTo(2, 3, 4, 0); g.stroke(); }
+          g.restore();
+          continue;
         }
         default: break;
       }
@@ -475,28 +684,121 @@ const ART = {
 
 export const COMPANION_FX = Object.keys(ART);
 
-/** Sprite sheet of companion `fx`: a 256x128 canvas, frame 0 on the left and frame 1 on the right. */
+/** Stand-in for an image-sheet pet until its file loads (or when it is missing): a coloured blob, 128 px per frame. */
+function blob(g, f, col) {
+  const sq = f % 2 ? 1.06 : 0.97;
+  g.beginPath(); g.ellipse(64, 76 + (f % 2 ? 0 : 3), 40 * sq, 34 / sq, 0, 0, TAU); fillStroke(g, grad(g, 40, 112, col, col), 5);
+  g.fillStyle = 'rgba(255,255,255,0.35)'; g.beginPath(); g.ellipse(48, 58, 12, 5, -0.4, 0, TAU); g.fill();
+  g.fillStyle = INK;
+  g.beginPath(); g.ellipse(52, 72, 3.6, 5, 0, 0, TAU); g.ellipse(76, 72, 3.6, 5, 0, 0, TAU); g.fill();
+}
+
+/** Sprite sheet of companion `fx`: frames side by side (128 px each; procedural pets 2 frames, image pets their placeholder). */
 export function companionSheet(fx) {
-  const c = makeCanvas(256, 128), g = c.getContext('2d');
-  const draw = ART[fx];
+  const frames = petFrames(fx), c = makeCanvas(128 * frames, 128), g = c.getContext('2d');
+  const draw = ART[fx] || (PET_ART[fx] && ((gg, f) => blob(gg, f, PET_ART[fx].col)));
   if (!draw) return c;
-  for (let f = 0; f < 2; f++) { g.save(); g.translate(f * 128, 0); draw(g, f); g.restore(); }
+  for (let f = 0; f < frames; f++) { g.save(); g.translate(f * 128, 0); draw(g, f); g.restore(); }
   return c;
 }
 
-/** Companion preview: the sprite bobbing on the stage. */
+/** Companion preview: the sprite bobbing on the stage (image pets draw their real sheet once it has loaded). */
 export function drawCompanionPreview(g, sheet, fx, t, w, h) {
   drawStage(g, w, h);
-  const bob = Math.sin(t * 3) * 2.5, f = Math.floor(t * 4) % 2;
-  g.drawImage(sheet, f * 128, 0, 128, 128, 3, 10 + bob, w - 6, w - 6);
+  const art = PET_ART[fx], frames = petFrames(fx), src = (art && artReady(petSheetUrl(fx))) || sheet;
+  if (!src) return;
+  const fw = (src.naturalWidth || src.width) / frames, fh = src.naturalHeight || src.height;
+  const bob = Math.sin(t * 3) * 2.5, f = Math.floor(t * (art ? art.prev : 4)) % frames;
+  g.drawImage(src, f * fw, 0, fw, fh, 3, 10 + bob, w - 6, w - 6);
+}
+
+/* ---------- hat preview ---------- */
+
+const RUN1 = 'assets/hero/run_01.webp';
+const HEAD = { x: 257, y: 82 };                  // run_01: hair crown (= HAT_ANCHOR.run1 in px, hats.js) between the ears
+const WIN = { x: 130, w: 252, up: 118, down: 197 };   // window on the frame: 118 px of empty space above the head, 197 px of body below
+
+/** A hat on the hero's head: the real run_01 frame (shown, never changed) with the hat sprite drawn over it, as in the run. */
+export function drawHatPreview(g, fx, t, w, h) {
+  drawStage(g, w, h);
+  const hero = artReady(RUN1), k = w / WIN.w, art = HAT_ART[fx];
+  if (!hero) return;
+  const top = WIN.up * k;
+  g.drawImage(hero, WIN.x, 0, WIN.w, WIN.down, 0, top, w, WIN.down * k);
+  const img = art && artReady(hatSheetUrl(fx));
+  if (!img) return;
+  const px = art.size / (2.45 / 640) * k, fw = img.naturalWidth / art.frames;   // quad side in preview px
+  const f = hatFrame(fx, t);
+  const x = (HEAD.x - WIN.x) * k - px / 2, y = top + HEAD.y * k - px * (1 - ART_BASE) - art.lift / (2.45 / 640) * k + (art.pulse && !FXP.calm ? Math.sin(t * 2) * 0.6 : 0);
+  g.save();
+  if (art.pulse) g.globalAlpha = FXP.calm ? 1 - art.pulse * 0.65 : 1 - art.pulse * 1.25 + art.pulse * 1.25 * Math.sin(t * 2.4);
+  g.drawImage(img, f * fw, 0, fw, img.naturalHeight, x, y, px, px);
+  g.restore();
 }
 
 /* ---------- particle / decal textures ---------- */
 
+// Words the text trails draw (cosmetic-art stays closed over this list: no player text ever reaches a canvas)
+export const TRAIL_TEXT = { danmaku: ['笑死', 'ㄏㄏ', '好扯', '+1', '神'], merit: '功德 +1' };
+const TEXT_OK = new Set([...TRAIL_TEXT.danmaku, TRAIL_TEXT.merit]);
+const TEXT_GOLD = TRAIL_TEXT.merit;
+
+function heartPath(g, cx, cy, s) {
+  g.beginPath();
+  g.moveTo(cx, cy + s * 0.9);
+  g.bezierCurveTo(cx - s * 1.5, cy - s * 0.1, cx - s * 0.9, cy - s * 1.1, cx, cy - s * 0.35);
+  g.bezierCurveTo(cx + s * 0.9, cy - s * 1.1, cx + s * 1.5, cy - s * 0.1, cx, cy + s * 0.9);
+  g.closePath();
+}
+
+/**
+ * Particle textures: 'coin' | 'bone' | 'paw' | 'heart' | 'fheart' | 'zzz' | 'ribbon' | 'confetti' (64 px, square) and
+ * 'ring' | 'text:<word of TRAIL_TEXT>' (128 px, square). zzz / ribbon / confetti are drawn white where the particle
+ * colour (fx.js) tints them; hearts, text and ring keep their own colours. Anything else: a blank canvas.
+ */
 export function spriteCanvas(name) {
-  const S = 64, c = makeCanvas(S, S), g = c.getContext('2d');
+  const S = name === 'ring' || name.startsWith('text:') ? 128 : 64, c = makeCanvas(S, S), g = c.getContext('2d');
   g.lineCap = 'round'; g.lineJoin = 'round';
-  if (name === 'coin') {
+  if (name === 'heart' || name === 'fheart') {
+    // pink hearts in their own colours (fx.js emits them untinted); the finger heart is a smaller one held by a crossed thumb and finger
+    const fh = name === 'fheart';
+    heartPath(g, 32, fh ? 24 : 30, fh ? 17 : 21);
+    g.fillStyle = grad(g, 10, 50, '#ff8ab4', '#ff4f86'); g.fill(); g.strokeStyle = INK; g.lineWidth = 4; g.stroke();
+    g.fillStyle = 'rgba(255,255,255,0.8)'; g.beginPath(); g.ellipse(22, fh ? 17 : 21, 4.5, 2.6, -0.7, 0, TAU); g.fill();
+    if (fh) {
+      for (const k of [-1, 1]) {      // thumb and index finger crossing under the heart
+        g.save(); g.translate(32, 50); g.rotate(k * 0.62);
+        rr(g, -5, -13, 10, 26, 5); fillStroke(g, '#ffd9b8', 3.5);
+        g.restore();
+      }
+    }
+  } else if (name === 'zzz') {
+    poly(g, [14, 14, 50, 14, 50, 22, 28, 46, 52, 46, 52, 54, 12, 54, 12, 46, 34, 22, 14, 22]);
+    g.fillStyle = '#fff'; g.fill(); g.strokeStyle = INK; g.lineWidth = 4; g.stroke();
+    g.fillStyle = 'rgba(190,190,215,0.5)'; g.fillRect(16, 16, 32, 3);
+  } else if (name === 'ribbon') {
+    const strip = () => { g.beginPath(); g.moveTo(8, 50); g.bezierCurveTo(20, 4, 30, 60, 40, 24); g.bezierCurveTo(44, 10, 52, 12, 56, 14); };
+    g.strokeStyle = 'rgba(70,60,90,0.85)'; g.lineWidth = 12; strip(); g.stroke();
+    g.strokeStyle = '#fff'; g.lineWidth = 8; strip(); g.stroke();
+    g.strokeStyle = 'rgba(170,170,200,0.7)'; g.lineWidth = 2; g.beginPath(); g.moveTo(12, 40); g.bezierCurveTo(20, 18, 26, 44, 34, 30); g.stroke();
+  } else if (name === 'confetti') {
+    rr(g, 14, 18, 36, 28, 5); g.fillStyle = '#fff'; g.fill(); g.strokeStyle = 'rgba(70,60,90,0.85)'; g.lineWidth = 4; g.stroke();
+    g.fillStyle = 'rgba(170,170,200,0.6)'; g.fillRect(18, 34, 28, 8);
+  } else if (name === 'ring') {
+    g.strokeStyle = INK; g.lineWidth = 14; g.beginPath(); g.ellipse(64, 64, 40, 40, 0, 0, TAU); g.stroke();
+    g.strokeStyle = '#ffd23f'; g.lineWidth = 8; g.beginPath(); g.ellipse(64, 64, 40, 40, 0, 0, TAU); g.stroke();
+    g.strokeStyle = 'rgba(255,255,255,0.8)'; g.lineWidth = 3; g.beginPath(); g.arc(64, 64, 40, Math.PI * 1.1, Math.PI * 1.45); g.stroke();
+  } else if (name.startsWith('text:')) {
+    const word = name.slice(5);
+    if (!TEXT_OK.has(word)) return c;
+    let px = 62;
+    g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.font = `900 ${px}px "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", sans-serif`;
+    px = Math.min(px, Math.floor(px * 112 / Math.max(1, g.measureText(word).width)));
+    g.font = `900 ${px}px "Noto Sans TC", "Microsoft JhengHei", "PingFang TC", sans-serif`;
+    g.lineWidth = Math.max(5, px * 0.16); g.strokeStyle = INK; g.strokeText(word, 64, 66);
+    g.fillStyle = word === TEXT_GOLD ? '#ffd23f' : '#fff'; g.fillText(word, 64, 66);
+  } else if (name === 'coin') {
     const k = g.createRadialGradient(26, 24, 3, 32, 32, 28);
     k.addColorStop(0, '#fff3a8'); k.addColorStop(0.6, '#ffc926'); k.addColorStop(1, '#e08a10');
     g.beginPath(); g.arc(32, 32, 27, 0, TAU); g.fillStyle = k; g.fill();

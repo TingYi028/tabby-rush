@@ -1,5 +1,6 @@
 import { store } from './audio.js';
 import { remote, rpc, clientId } from './leaderboard.js';
+import { abuseForms } from './settings.js';
 
 /**
  * 許願池 client (the view is wish-ui.js). Players send feature wishes and vote; the developer answers with a status and
@@ -10,7 +11,7 @@ import { remote, rpc, clientId } from './leaderboard.js';
  *   tr_wish_vote(p_client, p_id)             -> the new vote count (toggles this player's vote)
  * Every call resolves to { ok: true, ... } or { ok: false, code, message } with a zh-Hant message fit to show, never throws:
  *   soon     the world service is not set up (no assets/leaderboard.json) or tools/wishes.sql has not been run (404)
- *   offline  no network / timeout       limit  too many requests    quota  3 wishes a day used     busy  review queue full
+ *   offline  no network / timeout       limit  too many requests    quota  3 wishes a day used     waiting  5 wishes still in review     busy  review queue full
  *   rejected / short / long / dup / category   the text or category was refused    error  anything else
  * Wish text is untrusted: the view must only ever put it in with textContent.
  *
@@ -38,6 +39,7 @@ export const MESSAGES = {
   offline: '連不上許願池，請檢查網路後再試一次。',
   limit: '操作太頻繁了，等一下再試試看。',
   quota: `每人每天最多許 ${DAILY} 個願望，明天再來吧！`,
+  waiting: '你還有 5 個願望在審核中，等開發者看過再許新的吧！',
   busy: '許願池現在排隊的人太多，晚點再來看看。',
   rejected: '這段話沒辦法送出：請不要放連結、電話、信箱，也不要有不雅的字詞。',
   short: `再多寫一點吧（至少 ${MIN_LEN} 個字）。`,
@@ -73,8 +75,6 @@ const SPACES = new RegExp('[^' + BS + 'S' + U(0xfeff) + ']+', 'g');   // all whi
 const STRIP = new RegExp('[' + CLASS([[0, 0x1f], [0x7f, 0x9f], [0xad], [0x34f], [0x115f, 0x1160], [0x180e], [0x200b, 0x200f],
   [0x202a, 0x202e], [0x2060, 0x2064], [0x2066, 0x2069], [0x3164], [0xfeff], [0xffa0]]) + '<>]', 'g');
 const TAGS = /<[^<>]{1,40}>/g;
-const FLAT = /[\s._*~!@#$%^&()+=|\/\\'"`,:;?，。！？、；：「」『』（）【】《》〈〉…—～·-]+/g;
-const LEET = { 0: 'o', 1: 'i', '!': 'i', 3: 'e', $: 's', 5: 's', '@': 'a' };
 
 /** The text as the server stores it: tags and invisible characters dropped, white space collapsed. */
 export function cleanWish(text) {
@@ -82,13 +82,13 @@ export function cleanWish(text) {
   return t.replace(TAGS, ' ').replace(SPACES, ' ').replace(STRIP, '').replace(SPACES, ' ').trim();
 }
 
-/** True when the (cleaned) text holds a link, a contact detail or abuse: the server would answer 'rejected'. */
+/** True when the (cleaned) text holds a link, a contact detail or abuse: the server would answer 'rejected'. The abuse lists also meet
+ *  the spaced, full-width, accented, look-alike-letter and simplified-Chinese forms (settings.js abuseForms), a little stricter than the
+ *  server's patterns, which tools/wishes.sql still holds word for word (the server has the last word). */
 export function isBlocked(clean) {
   const f = clean.normalize('NFKC').toLowerCase();
-  const low = f.replace(/[01!3$5@]/g, (c) => LEET[c]);
-  const words = low.replace(/([a-z])[._*~-](?=[a-z])/g, '$1'); // f.u.c.k -> fuck
-  const flat = low.replace(FLAT, '');
-  return RE.link.test(f) || RE.mail.test(f) || RE.num.test(f) || RE.rep.test(clean) || RE.zh.test(flat) || RE.en.test(words);
+  const a = abuseForms(clean);
+  return RE.link.test(f) || RE.mail.test(f) || RE.num.test(f) || RE.rep.test(clean) || RE.zh.test(a.flat) || a.words.some((w) => RE.en.test(w));
 }
 
 /** What the player typed -> { ok: true, text } or { ok: false, reason: 'short' | 'long' | 'rejected' }.
@@ -116,7 +116,7 @@ export function explain(e) {
   const st = e?.status, msg = serverMessage(e);
   if (st === 404) { missingAt = Date.now(); return fail('soon'); }
   if (!st) return fail('offline');   // network error or timeout
-  if (st === 429) return fail(msg === 'too many wishes' ? 'quota' : msg === 'busy' ? 'busy' : 'limit');
+  if (st === 429) return fail(msg === 'too many wishes' ? 'quota' : msg === 'too many waiting' ? 'waiting' : msg === 'busy' ? 'busy' : 'limit');
   if (st === 400) {
     if (msg === 'rejected') return fail('rejected');
     if (msg === 'too short') return fail('short');

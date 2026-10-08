@@ -2,7 +2,7 @@ import * as C from './config.js';
 import { Train, Ramp, Hurdle, Overhead, PowerUp, JumpPad, BoostStrip } from './objects.js';
 import { setPieces } from './setpieces.js';
 import { tuneRow, inTunnel } from './director.js';
-import { PEAK, comboGap } from './peak.js';
+import { PEAK, comboGap, peakParams } from './peak.js';
 
 const FACTORY = { train: Train, ramp: Ramp, hurdle: Hurdle, overhead: Overhead, power: PowerUp, pad: JumpPad, boost: BoostStrip };
 const POWER_WEIGHTS = [['magnet', 0.3], ['sneakers', 0.17], ['x2', 0.25], ['shield', 0.2], ['jetpack', 0.08]];
@@ -222,26 +222,27 @@ export class Spawner {
     const k = this.k++;
     const s0 = C.START_GAP + k * C.SLOT;
     if (!this.roof && s0 >= this.nextPeak) this.openPeak(s0);
-    // Peak hour rows (peak.js): `dense` rows get the density rules; in a tunnel only coins / arcs / breathers change
-    const peak = this.peakAt(s0), dense = peak && !inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6);
+    // Peak hour rows (peak.js): `peak` is the span's numbers (null outside); `dense` rows get the density rules, in a
+    // tunnel only coins / arcs / breathers change
+    const span = this.peakSpanAt(s0), peak = span && peakParams(span), dense = peak && !inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6) ? peak : null;
     const wave = k % WAVE.length;
     const gate = wave === GATE_ROW, breather = wave === 7 || (wave === 6 && s0 < 1500 && !peak);
     let diff = C.clamp(C.clamp(s0 / 2500, 0, 1) + (wave === 6 && !breather ? 0.1 : WAVE[wave]), 0, 1);
-    if (dense && !breather) diff = Math.max(diff, PEAK.diff);
+    if (dense && !breather) diff = Math.max(diff, dense.diff);
     const prevBlocked = this.blocked[k - 1] || [false, false, false];
     if (k > 3) this.blocked[k - 4] = undefined; // only the previous row is ever read
     if (this.setPieceRow(k, s0)) return; // rooftop segment rows (setpieces.js)
 
     const prevSafe = this.safe;
     // An oncoming train needs a clear lane next to an unchanging safe lane for the rows it sweeps through.
-    if (!this.reserve && s0 > 200 && k - this.lastMoving > (dense ? PEAK.bookGap : 3) && Math.random() < (dense ? PEAK.book : 0.4 + 0.2 * diff)) {
+    if (!this.reserve && s0 > 200 && k - this.lastMoving > (dense ? dense.bookGap : 3) && Math.random() < (dense ? dense.book : 0.4 + 0.2 * diff)) {
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k);
       if (cand.length) this.reserve = { lane: C.pick(cand), until: k + 6 };
     }
     this.planSwerve(k, s0, prevSafe);
     const R = this.reserve;
     let newSafe = prevSafe;
-    if (!R && k > 1 && Math.random() < (dense ? PEAK.safeMove : 0.4)) {
+    if (!R && k > 1 && Math.random() < (dense ? dense.safeMove : 0.4)) {
       // (peak hour: a lane whose train ended in the previous row counts too; busy still keeps every train body out)
       const cand = [prevSafe - 1, prevSafe + 1].filter((l) => l >= 0 && l <= 2 && this.busy[l] <= k && (dense || !prevBlocked[l]));
       if (cand.length) newSafe = C.pick(cand);
@@ -261,14 +262,18 @@ export class Spawner {
         if (k >= R.until) { content[L] = 'moving'; this.reserve = null; }
         continue;
       }
+      // later peak hours: the lane the safe lane just left takes a flat train, a forced lane change (the new safe lane is
+      // next to it and open, and the fairness pass below still runs). Not on gate rows, nor in the combo lane of the row
+      // after a gate (its hurdle stands up to 9 m into this row); no draw when `vacate` is 0, so the 1st peak hour's stream is unchanged
+      if (dense && !gate && L === prevSafe && newSafe !== prevSafe && dense.vacate > 0 && !(this.comboRow === k - 1 && L === this.comboLane) && Math.random() < dense.vacate) { content[L] = 'train'; continue; }
       if (safeSet.has(L)) {
         if (gate && L === prevSafe) content[L] = wall ? (Math.random() < 0.5 ? 'hurdle' : 'overhead') : 'combo';
-        else if (prevSafe === newSafe && Math.random() < (s0 < 1500 ? 0.2 + 0.25 * diff : 0.24 + 0.3 * diff) + (dense ? PEAK.safeBar : 0)) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
+        else if (prevSafe === newSafe && Math.random() < (s0 < 1500 ? 0.2 + 0.25 * diff : 0.24 + 0.3 * diff) + (dense ? dense.safeBar : 0)) content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
         continue;
       }
       const r = wall ? 0 : Math.random();
       const mid = L === 1 && prevSafe !== 1 && newSafe !== 1 ? 0.15 : 0;
-      if (r < 0.44 + 0.32 * diff + mid + (dense ? PEAK.trainAdd : 0)) {
+      if (r < 0.44 + 0.32 * diff + mid + (dense ? dense.trainAdd : 0)) {
         content[L] = Math.random() < (s0 < 2000 ? 0.36 : 0.28) ? 'rampTrain' : 'train';
       } else if (r < 0.6 + 0.25 * diff) {
         content[L] = Math.random() < 0.5 ? 'hurdle' : 'overhead';
@@ -302,14 +307,14 @@ export class Spawner {
     else if (wave < 3 && k > 3) this.maybeBoost(content, R, k, s0);
     if (this.rowHook) this.rowHook(content, k, this);
 
-    tuneRow(this, k, s0, content, blocked, prevBlocked, breather, dense); // zone theme + tunnel + peak rules (director.js)
+    tuneRow(this, k, s0, content, blocked, prevBlocked, breather, dense); // place + tunnel + peak rules (director.js)
     this.blocked[k] = blocked;
     const prevPadRow = this.padRow, prevPadLanes = this.padLanes;
     this.padRow = k;
     this.padLanes = [0, 1, 2].filter((L) => content[L] === 'pad');
 
     const info = [null, null, null];
-    for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff, dense ? PEAK.moveAdd : 0);
+    for (let L = 0; L < 3; L++) info[L] = this.place(content[L], L, s0, k, diff, dense ? dense.moveAdd : 0);
     const combo = content.indexOf('combo');
     if (combo >= 0) { this.comboRow = k; this.comboLane = combo; this.comboEnd = info[combo].at2; }
     this.armSwerve(R, content, s0);
@@ -435,7 +440,7 @@ export class Spawner {
   }
 
   placeCoins(content, info, blocked, safe, s0, k, prev, peak) {
-    const co = this.coins, vm = peak ? PEAK.speed : 1; // arcs follow the hero's peak-hour speed
+    const co = this.coins, vm = peak ? peak.speed : 1; // arcs follow the hero's peak-hour speed
     // Roof rewards on plain parked trains.
     for (let L = 0; L < 3; L++) {
       const inf = info[L];
@@ -464,7 +469,7 @@ export class Spawner {
 
   /** The coin line that suits what lane L holds: up a ramp and over its train, an arc over a hurdle, under a sign, or flat. */
   laneCoins(lane, c, inf, s0, k, peak) {
-    const co = this.coins, x = C.laneX(lane), vm = peak ? PEAK.speed : 1;
+    const co = this.coins, x = C.laneX(lane), vm = peak ? peak.speed : 1;
     if (c === 'rampTrain') {
       for (let s = inf.ramp + 0.8, n = 0; s < inf.front + inf.len - 1 && n < 14; s += 2.2, n++) {
         const h = s < inf.front ? C.clamp((s - inf.ramp) / C.RAMP_LEN, 0, 1) * C.TRAIN_TOP : C.TRAIN_TOP;

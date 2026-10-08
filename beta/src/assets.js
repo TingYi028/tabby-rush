@@ -28,6 +28,35 @@ export function loadImages(onProgress) {
   })));
 }
 
+/** Images of a place's art set, assets/zones/<set>/<name>.webp (specs/zone_pack.md); props, decals and skin may be absent. */
+export const SET_FILES = ['facade_1', 'facade_2', 'facade_3', 'skyline', 'props', 'decals', 'skin'];
+const SET_TIMEOUT = 15000;
+
+/**
+ * Lazily fetch and decode the art set `set` (never part of the boot manifest). Resolves `{ <file>: HTMLImageElement | null }`
+ * for every name in SET_FILES plus `atlas` (the parsed assets/zones/<set>/atlas.json: pixel rects and heights of the props and
+ * decals; unchecked, zoneload.js parseAtlas validates it): a file that is missing, fails or takes longer than SET_TIMEOUT is
+ * `null`, never a rejection. Images are decoded here, so the later texture upload does not decode on the main thread.
+ */
+export function loadSet(set) {
+  const bad = !/^[a-z0-9_]{1,24}$/.test(set);
+  const atlas = new Promise((resolve) => {
+    if (bad) { resolve(null); return; }
+    const timer = setTimeout(() => resolve(null), SET_TIMEOUT);
+    Promise.resolve().then(() => fetch(`assets/zones/${set}/atlas.json`)).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      .then((j) => { clearTimeout(timer); resolve(j); });
+  });
+  return Promise.all([...SET_FILES.map((f) => new Promise((resolve) => {
+    if (bad) { resolve(null); return; }
+    const img = new Image();
+    const timer = setTimeout(() => { img.onload = img.onerror = null; resolve(null); }, SET_TIMEOUT);
+    const done = (v) => { clearTimeout(timer); resolve(v); };
+    img.onload = () => (img.decode ? img.decode().then(() => done(img), () => done(img)) : done(img));
+    img.onerror = () => done(null);
+    img.src = `assets/zones/${set}/${f}.webp`;
+  })), atlas]).then((got) => Object.fromEntries([...SET_FILES, 'atlas'].map((f, i) => [f, got[i]])));
+}
+
 let maxAniso = 4;
 export const setAniso = (n) => { maxAniso = n; };
 

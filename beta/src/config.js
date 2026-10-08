@@ -42,7 +42,9 @@ export const BASE_SPEED = 21;
 export const MAX_SPEED = 42;
 export const SPEED_RAMP = 1500;     // distance over which speed approaches MAX_SPEED
 /** Run speed (m/s) at track distance s, before frenzy / surge multipliers: ~29 m/s after 30 s, ~37 after 90 s. */
-export const speedAt = (s) => BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (1 - Math.exp(-s / SPEED_RAMP));
+export const LATE = { from: 3000, rate: 1, cap: 6 };   // m, m/s per km, m/s: +1 m/s per km after 3 km, 48 m/s from 9 km
+export const speedAt = (s) => BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (1 - Math.exp(-s / SPEED_RAMP))
+  + Math.min(LATE.cap, Math.max(0, s - LATE.from) * LATE.rate / 1000);
 export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14, jetpack: 5 };
 
 // Thrills

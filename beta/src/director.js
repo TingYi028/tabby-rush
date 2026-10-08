@@ -1,11 +1,10 @@
 import * as C from './config.js';
-import { THEMES, themeIndexAt } from './themes.js';
-import { PEAK } from './peak.js';
+import { PLACES, placeAt } from './themes.js';
 
 /*
  * Zone director: schedules the dark-tunnel set pieces along the track (in track distance s, so the
  * generator ~250 m ahead and the visuals at the hero agree) and tunes each generated row for the
- * zone theme / tunnel it falls in. Spawner calls tuneRow() once per row (a one-line hook).
+ * place / tunnel it falls in. Spawner calls tuneRow() once per row (a one-line hook).
  */
 
 export const TUNNEL = {
@@ -87,10 +86,11 @@ function fair(prevBlocked, content, blocked) {
  *  - tunnel rows: no spring pads or boost strips; ramped trains become flat trains when that stays fair
  *  - more oncoming trains timed to meet the hero inside a tunnel, and in zones with spawn.moving
  *  - zones with spawn.barriers get extra hurdles / overhead signs in free side lanes
- *  - `dense` (a peak-hour row outside a tunnel, see peak.js): oncoming trains armed more often, at a shorter spacing
+ *  - `dense` (the peak.js numbers of the span, for a peak-hour row outside a tunnel; false otherwise): oncoming trains
+ *    armed with its `arm` chance, at its `bookGap` spacing
  */
 export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather, dense) {
-  const spawn = THEMES[themeIndexAt(s0)].spawn;
+  const spawn = PLACES[placeAt(s0)].spawn;
 
   // the row's obstacles sit at s0+2 .. s0+20; keep a short run-up before the portal clean too
   if (inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6)) {
@@ -120,7 +120,7 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather, dens
   // The spawner spaces oncoming trains >= 13 rows apart, so a higher rate also needs a shorter gap.
   let extra = spawn.moving, gap = spawn.movingGap || 6;
   if (inTunnel(s0 + 72, -12)) { extra = Math.max(extra, TUNNEL.moving); gap = Math.min(gap, TUNNEL.movingGap); }
-  if (dense) { extra = Math.max(extra, PEAK.arm); gap = Math.min(gap, PEAK.bookGap); }
+  if (dense) { extra = Math.max(extra, dense.arm); gap = Math.min(gap, dense.bookGap); }
   if (extra <= 0 || sp.reserve || s0 + C.SLOT <= 360 || k + 1 - sp.lastMoving <= gap) return;
   if (content[0] === 'moving' || content[1] === 'moving' || content[2] === 'moving') return;
   if (Math.random() >= extra) return;

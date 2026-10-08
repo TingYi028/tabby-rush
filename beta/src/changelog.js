@@ -1,7 +1,7 @@
 import { store as saved } from './audio.js';
 
 /*
- * 更新日誌: what changed in each version, the version pill at the bottom of the menu, and a one-time "已更新到 v1.x" banner
+ * 更新日誌: what changed in each version, the version pill in the menu's top-left corner, and a one-time "已更新到 v1.x" banner
  * for players whose last-seen version is older. Everything is built from JavaScript (like wish-ui.js); the stylesheet link
  * is in index.html, the styles in changelog.css. Texts are plain strings and only ever go in with textContent.
  *
@@ -17,6 +17,17 @@ import { store as saved } from './audio.js';
  * `draft`, sets `date` and trims the bullets to what really shipped. VERSION follows the newest entry.
  */
 export const CHANGELOG = [
+  {
+    v: '1.3', date: '2026-10-09', draft: true, title: '12 張新地圖・造型店 72 件新品',
+    items: [
+      '12 張新地圖：夜市、廟口、雪國、溫泉街……每局起點隨機。',
+      '造型店多了 72 件新品：布丁胖龍、頭飾、金幣外觀、列車塗裝。',
+      '第一個尖峰時段變溫和，之後更擠；跑過 3 公里越跑越快。',
+      '每日挑戰不再加任務倍率，大家在同一條賽道上公平比。',
+      '修正多開分頁會吃掉進度的問題，排行榜成績上傳更穩。',
+      '名字和願望的不雅字過濾更嚴格。',
+    ],
+  },
   {
     v: '1.2', date: '2026-10-08', title: '尖峰時段・段位徽章・更新日誌',
     items: [
@@ -55,7 +66,7 @@ export const CHANGELOG = [
 export const VERSION = CHANGELOG[0].v;
 
 const SEEN_KEY = 'ver';       // localStorage `tabbyrush.ver`
-const BANNER_MS = 12000;      // the banner leaves by itself (paused while the pointer or focus is on it)
+const BANNER_MS = 8000;       // the banner leaves by itself (paused while the pointer or focus is on it)
 
 /* ---------- versions ---------- */
 

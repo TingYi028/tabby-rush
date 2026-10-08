@@ -180,7 +180,46 @@ const CSS = `
 @keyframes tier-pop { 0% { transform: scale(0.6); } 60% { transform: scale(1.15); } 100% { transform: none; } }
 @media (prefers-reduced-motion: reduce) { .go-levelup.tier-up .tier-badge { animation: none; } }
 body.fx-calm .go-levelup.tier-up .tier-badge { animation: none; }
+
+/* ---------- game-over title frame: the equipped 結算橫幅 (shop kind banner) ---------- */
+/* The image is absolutely placed around the title: the card keeps the height it has without a banner. */
+.go-title { position: relative; display: grid; justify-items: center; min-width: 0; }
+.go-title > h2 { position: relative; z-index: 1; }
+.go-title.has-banner { width: 100%; }
+.go-banner { position: absolute; z-index: 0; left: 50%; top: 50%; width: calc(100% + 12px); height: calc(100% + 24px); transform: translate(-50%, -50%);
+  object-fit: contain; pointer-events: none; animation: go-banner-in 0.5s 0.15s ease-out both; }
+.go-banner[hidden] { display: none; }
+.go-title[data-banner="neon"] .go-banner { animation: go-banner-in 0.5s 0.15s ease-out both, go-neon 2.6s 0.7s ease-in-out infinite alternate; }
+@keyframes go-banner-in { 0% { opacity: 0; } 100% { opacity: 1; } }
+@keyframes go-neon { 0% { filter: brightness(1) drop-shadow(0 0 3px #ff4fd8); } 100% { filter: brightness(1.18) drop-shadow(0 0 9px #3df0ff); } }
+@media (prefers-reduced-motion: reduce) { .go-banner, .go-title[data-banner="neon"] .go-banner { animation: none; } }
+body.fx-calm .go-banner, body.fx-calm .go-title[data-banner="neon"] .go-banner { animation: none; }
 `;
+
+/**
+ * Frames the game-over title with the equipped 結算橫幅 (`name` = the banner's catalog fx, '' for none). Called by the shop
+ * view whenever the equipment changes; the picture is assets/ui/banner_<name>.webp (512x128) and hides itself when missing.
+ */
+export function setOverBanner(name) {
+  const box = $('go-title');
+  if (!box) return;
+  const want = /^[a-z0-9]+$/.test(name || '') ? name : '';
+  if ((box.dataset.banner || '') === want) return;
+  let img = box.querySelector('.go-banner');
+  box.classList.toggle('has-banner', !!want);
+  if (!want) { delete box.dataset.banner; if (img) img.hidden = true; return; }
+  if (!img) {
+    img = document.createElement('img');
+    img.className = 'go-banner';
+    img.alt = '';
+    img.setAttribute('aria-hidden', 'true');
+    img.addEventListener('error', () => { img.hidden = true; });
+    box.appendChild(img);
+  }
+  box.dataset.banner = want;
+  img.hidden = false;
+  img.src = `assets/ui/banner_${want}.webp`;
+}
 
 function injectStyles() {
   if ($('meta-css')) return;

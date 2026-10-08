@@ -176,6 +176,186 @@ function glass(g, x, y, w, h, rad) {
   g.stroke();
 }
 
+/* ---------- shop liveries (kind `livery`): another body palette + a motif band; the front lights, dark nose band, windscreen and roof stay ---------- */
+
+const LINK = '#3b1d0e';   // the cartoon outline colour of the shop art
+
+const LIVERY_SPEC = {
+  market: { body: '#d93a2f', dark: '#92231c', stripe: '#ffd36b', stripe2: '#fff1d6', roof: '#c3c9ce', band: ['#8e2019', '#681410'], motif: 'market' },
+  sakura: { body: '#f5a0c0', dark: '#c9628a', stripe: '#fff5f9', stripe2: '#e0577f', roof: '#c3c9ce', band: ['#e9709a', '#cc5081'], motif: 'sakura' },
+  seabreeze: { body: '#dcebf6', dark: '#8fb4d0', stripe: '#1f74c8', stripe2: '#7fcdf2', roof: '#c3c9ce', band: ['#2a82d4', '#1458a3'], motif: 'seabreeze' },
+  temple: { body: '#c22a25', dark: '#7d1612', stripe: '#f2c14e', stripe2: '#ffe9a6', roof: '#c3c9ce', band: ['#7d1414', '#590d0d'], motif: 'temple' },
+  candy: { body: '#ffc4dc', dark: '#e58bb2', stripe: '#9fe8d0', stripe2: '#fff3a6', roof: '#c3c9ce', band: ['#ffe3ef', '#ffd0e3'], motif: 'candy' },
+};
+export const LIVERY_IDS = Object.keys(LIVERY_SPEC);
+
+/** Same hex colour made lighter (amt > 0) or darker (amt < 0): the drawing code wants '#rrggbb' strings. */
+function tint(hex, amt) {
+  const n = parseInt(hex.slice(1), 16), t = amt < 0 ? 0 : 255, p = Math.abs(amt);
+  const c = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((x) => Math.round(x + (t - x) * p));
+  return `#${c.map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/**
+ * The five train variants of livery `id` ('market' | 'livery_market'; the five shop liveries, LIVERY_IDS), each with the
+ * same palette nudged a little lighter / darker and the car number of the factory variant, or null for the factory
+ * paint / an unknown id. They replace TRAIN_VARIANTS one for one: `trainAtlasCanvas(liveryVariants(id)[i], ...)`.
+ */
+export function liveryVariants(id) {
+  const spec = LIVERY_SPEC[String(id || '').replace(/^livery_/, '')];
+  if (!spec) return null;
+  return TRAIN_VARIANTS.map((base, i) => ({ ...spec, body: tint(spec.body, (i - 2) * 0.03), num: base.num }));
+}
+
+/** Atlas canvas of train variant `vi` in livery `id`; the factory variant when `id` is none / unknown. Graffiti `decals` only go on the factory paint. */
+export function liveryAtlasCanvas(id, vi, decals, seed) {
+  const list = liveryVariants(id);
+  return trainAtlasCanvas(list ? list[vi % list.length] : TRAIN_VARIANTS[vi % TRAIN_VARIANTS.length], decals, seed);
+}
+
+const BAND_Y0 = 136, BAND_Y1 = 214;   // the motif band on the side panel (1024x256 units), between the windows and the rivet row
+
+function liveryBand(g, v, W) {
+  const y0 = BAND_Y0, y1 = BAND_Y1;
+  const bg = g.createLinearGradient(0, y0, 0, y1);
+  bg.addColorStop(0, v.band[0]);
+  bg.addColorStop(1, v.band[1]);
+  g.fillStyle = bg;
+  g.fillRect(0, y0, W, y1 - y0);
+  g.save();
+  g.beginPath();
+  g.rect(0, y0, W, y1 - y0);
+  g.clip();
+  g.lineCap = 'round';
+  g.lineJoin = 'round';
+  MOTIFS[v.motif](g, W, y0, y1);
+  g.restore();
+  g.fillStyle = v.stripe; g.fillRect(0, y0 - 6, W, 6); g.fillRect(0, y1, W, 6);
+  g.fillStyle = v.stripe2; g.fillRect(0, y0 - 9, W, 3); g.fillRect(0, y1 + 6, W, 3);
+}
+
+const inked = (g, fill, w = 3) => { g.fillStyle = fill; g.fill(); g.lineWidth = w; g.strokeStyle = LINK; g.stroke(); };
+
+function lantern(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s, s);
+  g.strokeStyle = LINK; g.lineWidth = 3; g.beginPath(); g.moveTo(0, -30); g.lineTo(0, -24); g.stroke();
+  g.beginPath(); g.ellipse(0, 0, 21, 17, 0, 0, Math.PI * 2);
+  const k = g.createRadialGradient(0, 0, 2, 0, 0, 22);
+  k.addColorStop(0, '#ffcf5a'); k.addColorStop(0.5, '#ff5a3c'); k.addColorStop(1, '#d1261c');
+  inked(g, k);
+  g.strokeStyle = 'rgba(120,20,10,0.55)'; g.lineWidth = 2;
+  for (const dx of [-9, 0, 9]) { g.beginPath(); g.ellipse(0, 0, Math.abs(dx) + 1.5, 17, 0, -Math.PI / 2, Math.PI / 2); g.stroke(); }
+  for (const yy of [-19, 15]) { g.beginPath(); g.rect(-8, yy, 16, 5); inked(g, '#f2c14e', 2.5); }
+  g.beginPath(); g.moveTo(-3, 20); g.lineTo(3, 20); g.lineTo(4, 30); g.lineTo(-4, 30); g.closePath(); inked(g, '#f2c14e', 2);
+  g.restore();
+}
+function bowl(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s, s);
+  g.strokeStyle = 'rgba(255,255,255,0.75)'; g.lineWidth = 3;
+  for (const dx of [-8, 0, 8]) { g.beginPath(); g.moveTo(dx, -8); g.quadraticCurveTo(dx + 5, -15, dx, -22); g.stroke(); }
+  g.beginPath(); g.ellipse(0, -2, 20, 7, 0, 0, Math.PI * 2); inked(g, '#ffb13c', 2.5);
+  g.strokeStyle = '#d9822b'; g.lineWidth = 2;
+  g.beginPath(); g.moveTo(-12, -3); g.quadraticCurveTo(-4, 2, 4, -3); g.moveTo(-4, -5); g.quadraticCurveTo(5, 0, 12, -4); g.stroke();
+  g.beginPath(); g.moveTo(-22, -2); g.quadraticCurveTo(-18, 22, 0, 22); g.quadraticCurveTo(18, 22, 22, -2); g.closePath(); inked(g, '#fff1d6');
+  g.fillStyle = '#e0443a'; g.fillRect(-15, 8, 30, 4);
+  g.restore();
+}
+function skewer(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s, s); g.rotate(0.35);
+  g.strokeStyle = LINK; g.lineWidth = 5; g.beginPath(); g.moveTo(0, -30); g.lineTo(0, 32); g.stroke();
+  g.strokeStyle = '#e8c58a'; g.lineWidth = 2; g.stroke();
+  [-19, 0, 19].forEach((yy, i) => {
+    g.beginPath(); g.arc(0, yy, 11, 0, Math.PI * 2);
+    inked(g, ['#ff6a4a', '#ff9a3c', '#ff6a4a'][i], 2.5);
+    g.fillStyle = 'rgba(255,255,255,0.65)'; g.beginPath(); g.ellipse(-3.5, yy - 4, 3.2, 2.2, -0.6, 0, Math.PI * 2); g.fill();
+  });
+  g.restore();
+}
+function cup(g, x, y, s) {
+  g.save(); g.translate(x, y); g.scale(s, s);
+  g.strokeStyle = LINK; g.lineWidth = 5; g.beginPath(); g.moveTo(4, -6); g.lineTo(11, -30); g.stroke();
+  g.strokeStyle = '#ff6fa5'; g.lineWidth = 2.5; g.stroke();
+  g.beginPath(); g.moveTo(-17, -13); g.lineTo(17, -13); g.lineTo(12, 28); g.lineTo(-12, 28); g.closePath(); inked(g, '#f6efe4');
+  g.beginPath(); g.moveTo(-15, -2); g.lineTo(15, -2); g.lineTo(12, 28); g.lineTo(-12, 28); g.closePath(); g.fillStyle = '#b87843'; g.fill();
+  g.fillStyle = '#3a1f12';
+  for (const [px, py] of [[-7, 22], [0, 23], [7, 22], [-3, 17], [4, 17]]) { g.beginPath(); g.arc(px, py, 3.2, 0, Math.PI * 2); g.fill(); }
+  g.beginPath(); g.moveTo(-17, -13); g.lineTo(17, -13); g.lineTo(12, 28); g.lineTo(-12, 28); g.closePath(); g.lineWidth = 3; g.strokeStyle = LINK; g.stroke();
+  g.beginPath(); g.rect(-19, -17, 38, 6); inked(g, '#ff6fa5', 2.5);
+  g.restore();
+}
+function blossom(g, x, y, r, rot, fill = '#fff4f8') {
+  g.save(); g.translate(x, y); g.rotate(rot);
+  g.beginPath();
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
+    g.moveTo(0, 0);
+    g.bezierCurveTo(Math.cos(a - 0.62) * r * 1.15, Math.sin(a - 0.62) * r * 1.15, Math.cos(a - 0.2) * r * 1.2, Math.sin(a - 0.2) * r * 1.2, Math.cos(a - 0.1) * r * 0.98, Math.sin(a - 0.1) * r * 0.98);
+    g.lineTo(Math.cos(a) * r * 0.86, Math.sin(a) * r * 0.86);
+    g.lineTo(Math.cos(a + 0.1) * r * 0.98, Math.sin(a + 0.1) * r * 0.98);
+    g.bezierCurveTo(Math.cos(a + 0.2) * r * 1.2, Math.sin(a + 0.2) * r * 1.2, Math.cos(a + 0.62) * r * 1.15, Math.sin(a + 0.62) * r * 1.15, 0, 0);
+  }
+  inked(g, fill, 2.5);
+  g.fillStyle = '#ffd23f'; g.beginPath(); g.arc(0, 0, r * 0.2, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#e0577f';
+  for (let i = 0; i < 5; i++) { const a = (i / 5) * Math.PI * 2; g.beginPath(); g.arc(Math.cos(a) * r * 0.42, Math.sin(a) * r * 0.42, r * 0.06, 0, Math.PI * 2); g.fill(); }
+  g.restore();
+}
+function cloudScroll(g, x, y, s, col) {
+  g.save(); g.translate(x, y); g.scale(s, s);
+  g.strokeStyle = col; g.lineWidth = 4.5;
+  for (const dir of [1, -1]) {      // two curls, one each side of the middle puff
+    const cx = -17 * dir;
+    g.beginPath();
+    g.arc(cx, 2, 14, dir > 0 ? Math.PI * 0.9 : Math.PI * 0.1, dir > 0 ? Math.PI * 2.05 : Math.PI * -1.05, dir < 0);
+    g.arc(cx, 2, 7, dir > 0 ? Math.PI * 2.05 : Math.PI * -1.05, dir > 0 ? Math.PI * 0.7 : Math.PI * 0.3, dir > 0);
+    g.stroke();
+  }
+  g.beginPath(); g.arc(0, -8, 10, Math.PI, 0); g.stroke();
+  g.beginPath(); g.moveTo(-34, 19); g.lineTo(34, 19); g.stroke();
+  g.fillStyle = col; g.beginPath(); g.arc(0, 4, 3.2, 0, Math.PI * 2); g.fill();
+  g.restore();
+}
+
+const MOTIFS = {
+  market(g, W, y0, y1) {
+    const icons = [lantern, bowl, skewer, cup], cy = (y0 + y1) / 2 + (y1 - y0) * 0.02;
+    for (let i = 0, x = 50; x < W + 40; i++, x += 92) icons[i % 4](g, x, cy, 0.92);
+  },
+  sakura(g, W, y0, y1) {
+    const r = rng(77), cy = (y0 + y1) / 2;
+    for (let x = 36, i = 0; x < W + 40; x += 64, i++) {
+      blossom(g, x + (r() - 0.5) * 8, cy + (i % 2 ? 11 : -11) + (r() - 0.5) * 6, 21 + (i % 3) * 3, r() * 6.28);
+      if (i % 2) blossom(g, x + 32, cy + (r() - 0.5) * 30, 9, r() * 6.28, '#ffe3ee');
+    }
+  },
+  seabreeze(g, W, y0) {
+    g.strokeStyle = '#ffffff';
+    g.lineWidth = 4;
+    for (let row = 0; row < 3; row++) {
+      const yy = y0 + 20 + row * 24, off = (row % 2) * 22;
+      g.globalAlpha = 1 - row * 0.18;
+      g.beginPath();
+      for (let x = -44 + off; x < W + 44; x += 44) { g.moveTo(x, yy); g.arc(x + 22, yy, 22, Math.PI, 0); }
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+  },
+  temple(g, W, y0, y1) {
+    const cy = (y0 + y1) / 2 - 3;
+    for (let x = 48; x < W + 40; x += 96) cloudScroll(g, x, cy, 0.92, '#f2c14e');
+    g.fillStyle = '#ffe9a6';
+    for (let x = 96; x < W + 40; x += 96) { g.beginPath(); g.moveTo(x, cy - 6); g.lineTo(x + 5, cy); g.lineTo(x, cy + 6); g.lineTo(x - 5, cy); g.fill(); }
+  },
+  candy(g, W, y0, y1) {
+    const cols = ['#ff9ec4', '#fff3a6', '#9fe8d0', '#c4a8ff'], h = y1 - y0;
+    for (let i = -4; i < W / 26 + 4; i++) {
+      g.fillStyle = cols[((i % 4) + 4) % 4];
+      g.beginPath(); g.moveTo(i * 26, y1); g.lineTo(i * 26 + 26, y1); g.lineTo(i * 26 + 26 + h * 0.6, y0); g.lineTo(i * 26 + h * 0.6, y0); g.fill();
+    }
+    g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillRect(0, y0, W, 9);
+  },
+};
+
 function drawSide(g, v, decals, r) {
   const W = 1024, H = 256;
   const grad = g.createLinearGradient(0, 0, 0, H);
@@ -186,8 +366,11 @@ function drawSide(g, v, decals, r) {
   g.fillRect(0, 0, W, H);
   g.fillStyle = 'rgba(0,0,0,0.28)'; g.fillRect(0, 0, W, 8);
   g.fillStyle = 'rgba(255,255,255,0.4)'; g.fillRect(0, 8, W, 3);
-  g.fillStyle = v.stripe; g.fillRect(0, H * 0.6, W, H * 0.075);
-  g.fillStyle = v.stripe2; g.fillRect(0, H * 0.685, W, H * 0.03);
+  if (v.motif) liveryBand(g, v, W);
+  else {
+    g.fillStyle = v.stripe; g.fillRect(0, H * 0.6, W, H * 0.075);
+    g.fillStyle = v.stripe2; g.fillRect(0, H * 0.685, W, H * 0.03);
+  }
   const sk = g.createLinearGradient(0, H * 0.86, 0, H);
   sk.addColorStop(0, '#3b3532');
   sk.addColorStop(1, '#1b1817');
@@ -220,7 +403,7 @@ function drawSide(g, v, decals, r) {
   g.fillStyle = grime;
   g.fillRect(0, H * 0.5, W, H * 0.4);
 
-  if (decals.length) {
+  if (decals.length && !v.motif) {   // liveries (shop) carry their own motif instead of graffiti
     const n = r() < 0.55 ? 1 : 2;
     const used = [];
     for (let i = 0; i < n; i++) {

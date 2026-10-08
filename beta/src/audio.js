@@ -13,8 +13,16 @@ const DOPPLER = { train_pass: [1.12, 0.88, 0.5] };
 const ALIAS = { buy: ['coin', 1.2], equip: ['ui_click', 1.3], mission: ['powerup', 1.35], levelup: ['newbest', 1.1],
   box_open: ['powerup', 0.9], peak: ['train_horn', 1.15] };
 
-/** The buffer to play for `name` and its playback-rate factor, or null when there is nothing to play. */
-export function soundFor(bufs, name) {
+// Shop 跳躍音效: each pack replaces only `jump` and `land`, from `assets/audio/<id>_jump.mp3` / `<id>_land.mp3`.
+export const JUMP_PACKS = ['sfx_8bit', 'sfx_meow', 'sfx_spring', 'sfx_muyu'];
+
+/**
+ * The buffer to play for `name` and its playback-rate factor, or null when there is nothing to play.
+ * With a jump `pack`, its `jump` / `land` comes first; a pack file that is missing falls back to the default sample.
+ */
+export function soundFor(bufs, name, pack = null) {
+  const p = pack && (name === 'jump' || name === 'land') ? `${pack}_${name}` : null;
+  if (p && bufs[p]) return { buf: bufs[p], factor: 1 };
   if (bufs[name]) return { buf: bufs[name], factor: 1 };
   const a = ALIAS[name];
   return a && bufs[a[0]] ? { buf: bufs[a[0]], factor: a[1] } : null;
@@ -101,6 +109,8 @@ export class AudioFX {
     this.bootTrack = null;
     this.trackSrc = null;
     this.vol = { music: 1, sfx: 1 };
+    this.pack = null;      // jump sound pack id (JUMP_PACKS) or null for the default jump / land
+    this.packLoads = {};   // pack id -> decode of its jump / land files (once)
   }
 
   /** Player volume settings 0..1 (music bus base 0.7, SFX bus base 0.9). */
@@ -133,6 +143,22 @@ export class AudioFX {
     this.buildLayers();
     this.groove = new Groove(this.ctx, this.musicBus);
     this.ready = this.loadAll();
+    if (this.pack) this.loadPack(this.pack);
+  }
+
+  /** Shop jump pack: `id` from JUMP_PACKS, anything else = the default jump / land. Its files load on first use. */
+  setJumpPack(id) {
+    this.pack = JUMP_PACKS.includes(id) ? id : null;
+    if (this.pack) this.loadPack(this.pack);
+  }
+
+  /** Decode `<id>_jump` and `<id>_land` once. A file that is missing or fails stays out, so its sound plays the default. */
+  loadPack(id) {
+    if (!this.ctx) return Promise.resolve();   // preload() loads the chosen pack
+    this.packLoads[id] ??= Promise.all(['jump', 'land'].map(async (n) => {
+      this.buf[`${id}_${n}`] = await this.fetchBuffer(`assets/audio/${id}_${n}.mp3`);
+    }));
+    return this.packLoads[id];
   }
 
   /**
@@ -258,7 +284,7 @@ export class AudioFX {
 
   /** `pan` -1..1 places the sound in the stereo field (StereoPannerNode where supported). */
   play(name, { vol = 1, rate = 1, pan = 0 } = {}) {
-    const s = soundFor(this.buf, name);
+    const s = soundFor(this.buf, name, this.pack);
     if (!this.ctx || !s) return;
     const src = this.ctx.createBufferSource();
     src.buffer = s.buf;

@@ -8,7 +8,7 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import * as C from './config.js';
-import { loadImages, setAniso } from './assets.js';
+import { loadImages, setAniso, images } from './assets.js';
 import { World } from './world.js';
 import { buildSharedMaterials, Coins, Drone, blinkLights } from './objects.js';
 import { Spawner } from './spawner.js';
@@ -22,9 +22,8 @@ import * as cosmetics from './cosmetics.js';
 import { BETA } from './channel.js';
 import { DAILY, DailyUI, dailyToday, dailyStatus, mulberry32, rowHook, completeDaily, recordDaily, dayKey } from './daily.js';
 import { REVIVE, ReviveOverlay, reviveCost, clearForRevive } from './revive.js';
-import { THEMES, ZONE, themeIndexAt } from './themes.js';
+import { PLACES, PLACE, placeAt, resetPlaces } from './themes.js';
 import { TUNNEL, resetDirector, nextTunnel } from './director.js';
-import { PEAK } from './peak.js';
 import { settings, FXP, vibrate } from './settings.js';
 import { SettingsUI } from './settings-ui.js';
 import { HelpUI } from './help-ui.js';
@@ -170,7 +169,8 @@ settings.onChange((k) => {
 });
 ui.stats(G.best, G.bank);
 
-const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650)) + progression.multBonus();
+// the mission start bonus (+1 per level) applies to normal runs only: the daily board compares the same seeded track like for like
+const multiplier = () => Math.min(10, 1 + Math.floor(G.dist / 650)) + (G.daily ? 0 : progression.multBonus());
 const totalMult = () => multiplier() * (G.power.x2 > 0 ? 2 : 1) * (G.fever > 0 ? 3 : 1) * cosmetics.scoreMult();
 
 /* ---------- camera rig ---------- */
@@ -430,7 +430,7 @@ function startRun(daily = false) {
   worldRoot.position.z = 0;
   setupRunMode(daily);
   // the tunnel schedule shapes the track, so it must come from the same seed as the generator (daily runs)
-  spawner.seeded(() => { resetZones(); spawner.reset(true); });
+  spawner.seeded(() => { resetZones(!!daily); spawner.reset(true); });   // a daily run redraws its place order from the seed
   resetSurge();
   player.reset();
   fx.clear();
@@ -597,6 +597,7 @@ function toMenu() {
   showChallenge();
   flushPending();
   resetZones();
+  drawPlaces();
   ui.stats(G.best, G.bank);
   dailyUI.refresh();
   ui.show('menu');
@@ -723,30 +724,41 @@ function endFever() {
   player.invuln = Math.max(player.invuln, 1.2);
 }
 
-/* ---------- zone themes (every ZONE.len m) & dark tunnels ---------- */
+/* ---------- places (every PLACE.len m, random order) & dark tunnels ---------- */
 
 const zone = { idx: 0, from: 0, t: 1, tunnel: -1, phase: 0 };
 
-/** Back to 午後 with no tunnel and a fresh tunnel schedule (new run / menu). */
-function resetZones() {
-  Object.assign(zone, { idx: 0, from: 0, t: 1, tunnel: -1, phase: 0 });
+/** Draw the next normal run's place order and start fetching its first place's art (the menu keeps the city backdrop). */
+function drawPlaces() {
+  resetPlaces();
+  world.preloadPlace(placeAt(0));
+}
+
+/** The run's first place (the menu shows 午後) with no tunnel and a fresh tunnel schedule; a daily run redraws the order from its seed. */
+function resetZones(draw = false) {
+  if (draw) resetPlaces();
+  const start = G.state === 'menu' ? 0 : placeAt(0);
+  Object.assign(zone, { idx: start, from: start, t: 1, tunnel: -1, phase: 0 });
   resetDirector();
-  world.setTheme(0, 0, 1);
+  world.setTheme(start, start, 1);   // first: the preloaded start set is now on screen, so dropping the preload pin keeps it
+  world.preloadPlace(-1);
   world.setTunnel(-1);
 }
 
 /** Zone cross-fades and tunnel entry / exit by the hero's distance (the generator reads the same schedule by track s). */
 function updateZones(dt) {
   if (G.state === 'menu') return;
-  const z = themeIndexAt(G.dist);
+  const z = placeAt(G.dist);
   if (z !== zone.idx) {
     zone.from = zone.idx;
     zone.idx = z;
     zone.t = 0;
-    if (G.state === 'play') ui.toast(THEMES[z].toast, null, THEMES[z].tone);
+    if (G.state === 'play') ui.toast(PLACES[z].toast, null, PLACES[z].tone);
   }
+  const ahead = placeAt(G.dist + 250);   // fetch + upload the next place's art before the boundary
+  if (G.state !== 'over') world.preloadPlace(ahead !== zone.idx ? ahead : -1);   // the game-over card keeps the next run's first place (drawPlaces)
   if (zone.t < 1) {
-    zone.t = Math.min(1, zone.t + dt / ZONE.fade);
+    zone.t = Math.min(1, zone.t + dt / PLACE.fade);
     world.setTheme(zone.from, zone.idx, zone.t);
   }
   const tn = nextTunnel(G.dist, 40);   // keep the shell until the camera is well past the exit
@@ -898,6 +910,7 @@ function gameOver() {
   store.set('bank', G.bank);
   G.state = 'over';
   progression.endRun(G); // commit missions, save, fill the bank + mission rows on the card
+  drawPlaces(); // 再跑一次 starts somewhere new; its art loads while the card is up
   cosmetics.endRun();
   ui.gameOver({ score, coins: G.coins, dist: Math.floor(G.dist), best: G.best, newBest });
   dailyOver(score);
@@ -941,7 +954,7 @@ function updateDaily() {
   if (!G.daily || G.daily.claimed || G.dist < DAILY.goal) return;
   G.daily.claimed = true;
   const r = completeDaily(G.daily.day);
-  if (!r) { ui.popup('今日挑戰完成！', 'cool'); return; }
+  if (!r) { ui.popup(dailyStatus(G.daily.day).held ? '挑戰完成！獎勵稍後可領' : '今日挑戰完成！', 'cool'); return; }   // held: inside DAILY.claimGapH
   G.daily.reward = r;
   G.bank += r.coins;
   progression.saveNow();
@@ -954,7 +967,7 @@ function updateDaily() {
 function dailyOver(score) {
   if (!G.daily) { dailyUI.over(null); return; }
   const rec = recordDaily(G.daily.day, score), st = dailyStatus(G.daily.day);
-  dailyUI.over({ ...rec, done: st.done, streak: st.streak, reward: G.daily.reward });
+  dailyUI.over({ ...rec, day: G.daily.day, done: st.done, streak: st.streak, reward: G.daily.reward });
 }
 
 /** The crash would end the run: offer a coin revive. State 'revive' freezes the world under the overlay. */
@@ -1148,7 +1161,7 @@ function updatePlay(dt) {
   G.time += dt;
   G.speed = C.speedAt(G.dist);
   if (G.mod === 'fast') G.speed = Math.max(G.speed, DAILY.fastSpeed);
-  G.peakMul = C.damp(G.peakMul, spawner.peakAt(G.dist) ? PEAK.speed : 1, 3, dt);
+  G.peakMul = C.damp(G.peakMul, spawner.peakSpeedAt(G.dist), 3, dt);   // 1.08 first peak hour, 1.12 later ones
   const v = runSpeed();
   stepWorld(dt, v);
   handlePlayerEvents(player.update(dt, {
@@ -1270,6 +1283,9 @@ canvas.addEventListener('webglcontextrestored', () => {
 });
 $('btn-reload').addEventListener('click', () => location.reload());
 
+// The debug hook object (window.__tabby), set only by the #debug line in init(): frame() reads the lockstep from here, never from
+// window, so a console line can't slow the game down on a live page (the live build strips that line, tools/build_dist.py).
+let DEBUG = null;
 function frame(now) {
   requestAnimationFrame(frame);
   if (glLost) { last = now; return; }
@@ -1281,7 +1297,8 @@ function frame(now) {
   if (G.state === 'pause' || G.state === 'over' || G.state === 'revive' || (G.state === 'menu' && OVERLAYS.has(document.body.dataset.screen))) {
     if (++idleFrames > 3) {
       // the revive countdown runs on raw time: it keeps ticking while the frozen scene is no longer redrawn
-      if (G.state === 'revive' && !(window.__tabby && window.__tabby.lock)) updateRevive(Math.min(0.1, (now - last) / 1000));
+      if (G.state === 'revive' && !(DEBUG && DEBUG.lock)) updateRevive(Math.min(0.1, (now - last) / 1000));
+      world.pumpZones();   // place art still builds (one texture job a frame) while the scene is frozen
       last = now;
       return;
     }
@@ -1289,9 +1306,9 @@ function frame(now) {
   // up to 0.1 s per frame: a slow phone (10-20 fps) still plays at full speed instead of in slow motion
   let raw = Math.min(0.1, (now - last) / 1000);
   last = now;
-  // debug lockstep (window.__tabby.lock): the game only advances the time it is given in __tabby.budget, so an
+  // debug lockstep (DEBUG.lock): the game only advances the time it is given in DEBUG.budget, so an
   // outside controller (the fly-brain demo) can run the game and its own simulation on one clock
-  const T = window.__tabby;
+  const T = DEBUG;
   if (T && T.lock) {
     if (!(T.budget > 0)) return;
     raw = Math.min(raw, T.budget);
@@ -1418,11 +1435,21 @@ async function boot() {
   await Promise.all([fonts, loadImages((p) => { artP = p; show(); }), audioReady]);
   const mats = buildSharedMaterials();
   world = new World(scene, worldRoot);
+  world.setRenderer(renderer);   // place-set textures upload one per frame while they preload
   coins = new Coins(worldRoot);
   spawner = new Spawner(worldRoot, mats, coins);
   player = new Player(scene);
   fx = new FX(worldRoot);
+  // 列車塗裝 (shop): repaint the shared train atlases in place; the art module loads only when a livery is worn
+  cosmetics.onEquipped('livery', (id) => {
+    if (!id && !mats.liveryOn) return;
+    mats.liveryOn = !!id;
+    const decals = [];
+    for (let i = 1; i <= 6; i++) if (images[`graffiti${i}`]) decals.push(images[`graffiti${i}`]);
+    import('./collect-art.js').then((m) => m.applyLivery(mats.trainMats, id, decals)).catch(() => {});
+  });
   cosmetics.attach(scene, player, fx);
+  fx.bindCoins(coins);   // coin skins (金幣外觀) swap the shared coin face
   cosmetics.onChange((type) => { if (type === 'change') idleFrames = 0; }); // compile a new look while the shop is open
   markers = new DistanceMarkers(worldRoot);
   drone = new Drone(mats);
@@ -1451,11 +1478,12 @@ async function boot() {
   ui.show('menu');
   cosmetics.menu(); // announces achievement unlocks once
   showChallenge();
+  drawPlaces();   // the first run's place order + art preload
   checkNewVersion({ fresh: progression.runsPlayed() === 0 }); // one-time 「已更新到 v1.x」 banner; brand-new players are marked silently
   flushPending();
   requestAnimationFrame(frame);
-  if (location.hash === '#debug' || new URLSearchParams(location.search).has('debug')) window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression, cosmetics };
-  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu, scene, fx, audio });
+  if (location.hash === '#debug' || new URLSearchParams(location.search).has('debug')) DEBUG = window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression, cosmetics };
+  if (DEBUG) Object.assign(DEBUG, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE: PLACE, TUNNEL, THEMES: PLACES, PLACE, PLACES, frame, composer, markers, boardUI, settings, toMenu, scene, fx, audio });
   // Browsers grant audio on pointerup / touchend / click / keydown (not touch pointerdown):
   // keep listening until the context is really running.
   const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];
