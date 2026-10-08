@@ -74,13 +74,13 @@ export const CATALOG = [
   P('ufo', '迷你飛碟', 'epic', 12000, '外星朋友路過，決定跟著你。', { perk: 0.06 }),
 
   // ---- 道具: bought as counts, armed before a run (not usable in the daily challenge) ----
-  { id: 'c_jet', kind: 'item', name: '起跑噴射', rarity: 'common', price: 350, icon: 'assets/ui/icon_jetpack.webp',
+  { id: 'c_jet', kind: 'item', name: '起跑噴射', rarity: 'common', price: 350, icon: 'assets/ui/item_jet.webp',
     desc: `開局直接噴射 ${HEADSTART} 秒，沿路撿天空金幣。` },
-  { id: 'c_score', kind: 'item', name: '加班分數章', rarity: 'common', price: 400, icon: 'assets/ui/icon_x2.webp',
+  { id: 'c_score', kind: 'item', name: '加班分數章', rarity: 'common', price: 400, icon: 'assets/ui/item_score.webp',
     desc: `這一局分數 ×${SCORE_MULT}。` },
-  { id: 'c_revive', kind: 'item', name: '復活券', rarity: 'common', price: 400, icon: 'assets/ui/icon_shield.webp',
+  { id: 'c_revive', kind: 'item', name: '復活券', rarity: 'common', price: 400, icon: 'assets/ui/item_revive.webp',
     desc: '撞車時自動使用，免費復活一次。' },
-  { id: 'c_box', kind: 'item', name: '虎斑驚喜箱', rarity: 'rare', price: 600, box: true,
+  { id: 'c_box', kind: 'item', name: '虎斑驚喜箱', rarity: 'rare', price: 600, icon: 'assets/ui/item_box.webp', box: true,
     desc: '開箱隨機得到金幣、道具，或是沒有的外觀。' },
 ];
 

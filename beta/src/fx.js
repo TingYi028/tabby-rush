@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { makeTexture } from './assets.js';
-import { softDotCanvas, starCanvas, bubbleCanvas } from './textures.js';
+import { softDotCanvas, starCanvas, bubbleCanvas, isCoarsePointer } from './textures.js';
 import { rand } from './config.js';
 import { FXP } from './settings.js';
 import { spriteCanvas } from './cosmetic-art.js';
@@ -33,9 +33,14 @@ void main() {
   gl_FragColor = vec4(vColor * t.rgb, a);
 }`;
 
-class ParticleSystem {
-  constructor(parent, max, texture, blending) {
+/**
+ * Fixed-capacity point sprites in one draw call. A ring cursor hands out slots (a full pool recycles the oldest), and
+ * `live` lists the slots in use, so update() costs the live particles, not the capacity.
+ */
+export class ParticleSystem {
+  constructor(parent, max, texture, blending, maxPx = 0.16) {
     this.max = max;
+    this.maxPx = maxPx;  // largest sprite, as a fraction of the drawing-buffer height
     this.gain = () => 1; // colour multiplier at emit time (additive sparkles follow the effects setting)
     this.cursor = 0;
     const geo = new THREE.BufferGeometry();
@@ -56,6 +61,14 @@ class ParticleSystem {
     this.a0 = new Float32Array(max);
     this.grav = new Float32Array(max);
     this.drag = new Float32Array(max);
+    this.live = new Uint16Array(max);   // slots in use, each at most once (`on` flags them)
+    this.on = new Uint8Array(max);
+    this.nLive = 0;
+    this.lastHi = 0;
+    this.visits = 0;                    // debug: live slots updated by the last update()
+    this.died = 0;                      // debug: slots that expired in it (zeroed there, then dropped from the list)
+    this.dyn = [geo.attributes.position, geo.attributes.size, geo.attributes.alpha]; // re-uploaded every frame
+    this.ranges = this.dyn.map(() => ({ start: 0, count: 0 }));
     this.material = new THREE.ShaderMaterial({
       uniforms: { uMap: { value: texture }, uScale: { value: 400 }, uMaxPx: { value: 160 } },
       vertexShader: VERT,
@@ -70,9 +83,17 @@ class ParticleSystem {
     parent.add(this.points);
   }
 
+  /** Pixel cap and scale (pixels per world unit at distance 1) for a drawing buffer `h` px tall. */
+  setScale(s, h) {
+    const u = this.material.uniforms;
+    u.uScale.value = s;
+    u.uMaxPx.value = Math.max(24, h * this.maxPx);
+  }
+
   emit(x, y, z, vx, vy, vz, life, s0, s1, color, a0 = 1, grav = 0, drag = 0) {
     const i = this.cursor;
-    this.cursor = (this.cursor + 1) % this.max;
+    this.cursor = (i + 1) % this.max;
+    if (!this.on[i]) { this.on[i] = 1; this.live[this.nLive++] = i; }
     const i3 = i * 3;
     this.pos[i3] = x; this.pos[i3 + 1] = y; this.pos[i3 + 2] = z;
     this.vel[i3] = vx; this.vel[i3 + 1] = vy; this.vel[i3 + 2] = vz;
@@ -85,36 +106,54 @@ class ParticleSystem {
   }
 
   update(dt) {
-    let hi = 0;
-    for (let i = 0; i < this.max; i++) {
-      if (this.life[i] <= 0) { this.alpha[i] = 0; this.size[i] = 0; continue; }
-      hi = i + 1;
-      this.life[i] -= dt;
-      const t = 1 - Math.max(0, this.life[i]) / this.maxLife[i];
+    const live = this.live, life = this.life, vel = this.vel, pos = this.pos, size = this.size, alpha = this.alpha;
+    let n = this.nLive, hi = 0, died = 0;
+    for (let k = 0; k < n;) {
+      const i = live[k];
+      if (i >= hi) hi = i + 1;
+      life[i] -= dt;
+      if (life[i] <= 0) {   // expired: its alpha has reached 0 anyway, so zero it here and drop it from the list
+        alpha[i] = 0; size[i] = 0; this.on[i] = 0;
+        live[k] = live[--n];
+        died++;
+        continue;
+      }
+      const t = 1 - life[i] / this.maxLife[i];
       const i3 = i * 3;
       const d = Math.exp(-this.drag[i] * dt);
-      this.vel[i3] *= d; this.vel[i3 + 1] = this.vel[i3 + 1] * d - this.grav[i] * dt; this.vel[i3 + 2] *= d;
-      this.pos[i3] += this.vel[i3] * dt;
-      this.pos[i3 + 1] += this.vel[i3 + 1] * dt;
-      this.pos[i3 + 2] += this.vel[i3 + 2] * dt;
-      this.size[i] = this.s0[i] + (this.s1[i] - this.s0[i]) * t;
-      this.alpha[i] = this.a0[i] * (t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85);
+      vel[i3] *= d; vel[i3 + 1] = vel[i3 + 1] * d - this.grav[i] * dt; vel[i3 + 2] *= d;
+      pos[i3] += vel[i3] * dt;
+      pos[i3 + 1] += vel[i3 + 1] * dt;
+      pos[i3 + 2] += vel[i3 + 2] * dt;
+      size[i] = this.s0[i] + (this.s1[i] - this.s0[i]) * t;
+      alpha[i] = this.a0[i] * (t < 0.15 ? t / 0.15 : 1 - (t - 0.15) / 0.85);
+      k++;
     }
-    // upload only the slots that can be alive (plus the ones that died since last frame); colours only after emits
-    const n = Math.max(hi, this.lastHi || 0);
+    this.nLive = n;
+    this.visits = n;
+    this.died = died;
+    // upload only the slots that can hold a particle (plus the ones zeroed since last frame); colours only after emits
+    const top = Math.max(hi, this.lastHi);
     this.lastHi = hi;
     this.geo.setDrawRange(0, hi);
-    if (!n) return;
-    const a = this.geo.attributes;
-    for (const at of [a.position, a.size, a.alpha]) {
+    if (!top) return;
+    for (let j = 0; j < this.dyn.length; j++) {
+      const at = this.dyn[j], r = this.ranges[j];
+      r.count = top * at.itemSize;
       at.clearUpdateRanges();
-      at.addUpdateRange(0, n * at.itemSize);
+      at.updateRanges.push(r);   // addUpdateRange(0, count) without the object it allocates per call
       at.needsUpdate = true;
     }
-    if (this.colDirty) { this.colDirty = false; a.pcolor.needsUpdate = true; }
+    if (this.colDirty) { this.colDirty = false; this.geo.attributes.pcolor.needsUpdate = true; }
   }
 
-  clear() { this.life.fill(0); }
+  clear() {
+    for (let k = 0; k < this.nLive; k++) {
+      const i = this.live[k];
+      this.life[i] = 0; this.alpha[i] = 0; this.size[i] = 0; this.on[i] = 0;
+    }
+    this.nLive = 0;
+  }
 }
 
 const COL = {
@@ -153,6 +192,7 @@ const TC = {
   stardust: [new THREE.Color(0.8, 1.0, 1.9), new THREE.Color(1.8, 1.65, 1.1), new THREE.Color(1.4, 1.0, 1.9)],
   galaxy: [new THREE.Color(0.5, 1.5, 2.0), new THREE.Color(2.0, 0.55, 1.7), new THREE.Color(1.8, 1.7, 1.3), new THREE.Color(1.1, 0.8, 2.0)],
 };
+const DUST_GAP = 0.09;   // seconds between dust puffs on phones
 const TRAIL_RATE = { coin: 15, bubble: 18, bone: 6, fire: 55, rainbow: 26, star: 34, galaxy: 70 };
 
 /** 虎斑腳印: a few paw decals on the ground, one draw call, fading with the distance run since they were stamped. */
@@ -223,10 +263,14 @@ class PawDecals {
 /** Particles live inside the moving world group, so dust stays put on the ground behind the hero. */
 export class FX {
   constructor(worldRoot) {
+    this.coarse = isCoarsePointer();
     this.add = new ParticleSystem(worldRoot, 700, makeTexture(starCanvas()), THREE.AdditiveBlending);
     this.add.gain = () => FXP.glow;
-    this.soft = new ParticleSystem(worldRoot, 500, makeTexture(softDotCanvas()), THREE.NormalBlending);
+    // dust / smoke puffs are alpha-blended full squares: half the size cap on phones (their fill rate is the limit)
+    this.soft = new ParticleSystem(worldRoot, 500, makeTexture(softDotCanvas()), THREE.NormalBlending, this.coarse ? 0.08 : 0.16);
     this.root = worldRoot;
+    this.clock = 0;       // simulated seconds (fx.update), the time base of the dust limiter
+    this.dustAt = 0;
     this.systems = [this.add, this.soft];
     this.scale = { s: 400, h: 1000 };
     // shop cosmetics (cosmetics.js): companion sprite, afterimages, trail state
@@ -238,17 +282,14 @@ export class FX {
     this.tacc = 0;
     this.tclock = 0;
   }
-  /** `s`: pixels per world unit at distance 1; `h`: drawing-buffer height (caps a particle at 16% of it). */
+  /** `s`: pixels per world unit at distance 1; `h`: drawing-buffer height (caps a particle at 16% of it, dust on phones 8%). */
   setScale(s, h = 1000) {
     this.scale.s = s;
     this.scale.h = h;
-    for (let i = 0; i < this.systems.length; i++) {
-      const u = this.systems[i].material.uniforms;
-      u.uScale.value = s;
-      u.uMaxPx.value = Math.max(24, h * 0.16);
-    }
+    for (let i = 0; i < this.systems.length; i++) this.systems[i].setScale(s, h);
   }
   update(dt) {
+    this.clock += dt;
     for (let i = 0; i < this.systems.length; i++) this.systems[i].update(dt);
   }
   clear() {
@@ -267,8 +308,12 @@ export class FX {
     }
   }
   dust(x, y, z, big = 1) {
+    if (this.coarse) {   // phones: one puff per DUST_GAP at most (~11 / s), however often the run loop asks
+      if (this.clock < this.dustAt) return;
+      this.dustAt = Math.max(this.dustAt + DUST_GAP, this.clock + DUST_GAP / 2);
+    }
     this.soft.emit(x + rand(-0.25, 0.25), y + 0.08, z + rand(-0.2, 0.2), rand(-0.6, 0.6), rand(0.4, 1.1), rand(0.2, 1.2),
-      rand(0.45, 0.7), 0.45 * big, 1.6 * big, Math.random() < 0.5 ? COL.dust : COL.dustDark, 0.42, -0.4, 1.5);
+      rand(0.45, 0.7), 0.45 * big, 1.0 * big, Math.random() < 0.5 ? COL.dust : COL.dustDark, 0.42, -0.4, 1.5);
   }
   land(x, y, z, count = 12) {
     const n = Math.max(1, Math.round(count));
@@ -307,8 +352,7 @@ export class FX {
     if (!p) {
       const tex = makeTexture(name === 'bubble' ? bubbleCanvas() : spriteCanvas(name));
       p = this.sprites[name] = new ParticleSystem(this.root, name === 'bubble' ? 40 : 60, tex, THREE.NormalBlending);
-      p.material.uniforms.uScale.value = this.scale.s;
-      p.material.uniforms.uMaxPx.value = Math.max(24, this.scale.h * 0.16);
+      p.setScale(this.scale.s, this.scale.h);
       this.systems.push(p);
     }
     return p;

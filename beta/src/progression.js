@@ -27,7 +27,7 @@ import { DAILY, dailyStatus, dailyToday, rewardFor as dailyReward } from './dail
  */
 
 const VERSION = 2;
-const MISSION_REV = 2;           // goal-table revision: older saves get their open missions re-scaled once
+const MISSION_REV = 3;           // goal-table revision: older saves get their open missions re-scaled once
 export const UPGRADE_STEP = 2;   // default seconds added per power-up upgrade level
 export const MAX_BONUS = 29;     // mission level score-multiplier bonus cap
 
@@ -56,7 +56,9 @@ const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
  * Goal for mission level L and pace profile (see goalFor): base x growth(L) x pf^pfp, a multiple of `r`, at most `cap`
  * (x pf); single-run goals grow by (1 + slope x L), cumulative ones by scale(L)^pow; `mult` follows the start
  * multiplier (score goals); `first` replaces base on level 1 (the opening set); `floor` = at least that many times the
- * player's median coins / distance / score of the last runs; `from` = first mission level that deals it,
+ * player's median coins / distance / score of the last runs; `pfl` = the pf exponent for players slower than the
+ * reference (pf < 1, default pfp): a skill goal that barely moves for them shrinks faster than their pace;
+ * `from` = first mission level that deals it; `minPf` = not dealt while the player's known pace factor is below it;
  * `deal: false` = never dealt any more (only old saves carry it).
  */
 export const MISSIONS = {
@@ -69,37 +71,39 @@ export const MISSIONS = {
   coin_total: { text: '累計收集 {n} 枚金幣', left: '再收集 {n} 枚金幣', m: 'coin', kind: 'sum', tier: 1, base: 1600, floor: 3, r: 50 },
   dist_total: { text: '累計跑 {n} 公尺', left: '再跑 {n} 公尺', m: 'dist', kind: 'sum', tier: 1, base: 5500, floor: 3, r: 500 },
   power_total: { text: '撿到 {n} 個道具', left: '再撿 {n} 個道具', m: 'power', kind: 'sum', tier: 1, base: 12, first: 12 },
-  boost_total: { text: '踩過加速帶 {n} 次', left: '再踩 {n} 次加速帶', m: 'boost', kind: 'sum', tier: 1, base: 12 },
-  smash_total: { text: 'RUSH 中撞飛 {n} 個障礙', left: '再撞飛 {n} 個障礙', m: 'smash', kind: 'sum', tier: 2, base: 14, from: 2 },
+  boost_total: { text: '踩過加速帶 {n} 次', left: '再踩 {n} 次加速帶', m: 'boost', kind: 'sum', tier: 1, base: 12, pfl: 1.5 },
+  smash_total: { text: 'RUSH 中撞飛 {n} 個障礙', left: '再撞飛 {n} 個障礙', m: 'smash', kind: 'sum', tier: 2, base: 14, from: 2, minPf: 1 },
   jet_total: { text: '使用噴射背包 {n} 次', left: '再用 {n} 次噴射背包', m: 'jet', kind: 'sum', tier: 2, base: 1, pfp: 0, cap: 2, deal: false },   // jetpacks are rare now: only old saves still carry it
-  trick_total: { text: '累計完成 {n} 個花式動作', left: '再完成 {n} 個花式動作', m: 'trick', kind: 'sum', tier: 1, base: 45 },
+  trick_total: { text: '累計完成 {n} 個花式動作', left: '再完成 {n} 個花式動作', m: 'trick', kind: 'sum', tier: 1, base: 45, pfl: 1.5 },
   runs_total: { text: '完成 {n} 局', left: '再跑 {n} 局', m: 'runs', kind: 'sum', tier: 1, base: 4, pow: 0.5, pfp: 0, cap: 12 },
+  // dealt once main.js calls track('peak') on a cleared 尖峰時段 (peak hour): drop `deal: false` together with that hook
+  peak_total: { text: '撐過 {n} 次尖峰時段', left: '再撐過 {n} 次尖峰時段', m: 'peak', kind: 'sum', tier: 2, base: 2, pfp: 0.5, from: 3, minPf: 0.75, cap: 20 },
   // ---- skill: clean technique ----
-  graze_run: { text: '一局內驚險閃過列車 {n} 次', left: '再 {n} 次驚險閃避', m: 'graze', run: true, kind: 'skill', tier: 2, base: 6, cap: 30 },
-  graze_total: { text: '累計驚險閃過列車 {n} 次', left: '再 {n} 次驚險閃避', m: 'graze', kind: 'skill', tier: 1, base: 14 },
-  pjump_total: { text: '完美跳躍 {n} 次', left: '再 {n} 次完美跳躍', m: 'pjump', kind: 'skill', tier: 2, base: 4 },
-  pjump_run: { text: '一局內完美跳躍 {n} 次', left: '再 {n} 次完美跳躍', m: 'pjump', run: true, kind: 'skill', tier: 3, base: 2, cap: 12 },
-  proll_total: { text: '完美翻滾 {n} 次', left: '再 {n} 次完美翻滾', m: 'proll', kind: 'skill', tier: 2, base: 5 },
-  proll_run: { text: '一局內完美翻滾 {n} 次', left: '再 {n} 次完美翻滾', m: 'proll', run: true, kind: 'skill', tier: 3, base: 2, cap: 12 },
-  trick_run: { text: '一局內完成 {n} 個花式動作', left: '再完成 {n} 個花式動作', m: 'trick', run: true, kind: 'skill', tier: 2, base: 16, cap: 60 },
-  combo_run: { text: '連擊達到 ×{n}', left: '再接 {n} 個連擊', m: 'combo', run: true, kind: 'skill', tier: 2, base: 6, slope: 0.01, pfp: 0.3, cap: 10 },
-  triple_total: { text: '完成「貓步三連」{n} 次', left: '再完成 {n} 次貓步三連', m: 'triple', kind: 'skill', tier: 3, base: 3, pfp: 0.8, from: 3, cap: 14 },
-  rush_total: { text: '發動 TABBY RUSH {n} 次', left: '再發動 {n} 次 RUSH', m: 'rush', kind: 'skill', tier: 2, base: 3, pfp: 0.5, from: 2, cap: 25 },
-  rush_run: { text: '一局內發動 TABBY RUSH {n} 次', left: '再發動 {n} 次 RUSH', m: 'rush', run: true, kind: 'skill', tier: 3, base: 2, pfp: 0.5, from: 8, cap: 6 },
-  smash_run: { text: '一局內 RUSH 撞飛 {n} 個障礙', left: '再撞飛 {n} 個障礙', m: 'smash', run: true, kind: 'skill', tier: 3, base: 6, from: 4, cap: 40 },
+  graze_run: { text: '一局內驚險閃過列車 {n} 次', left: '再 {n} 次驚險閃避', m: 'graze', run: true, kind: 'skill', tier: 2, base: 6, pfl: 2, cap: 30 },
+  graze_total: { text: '累計驚險閃過列車 {n} 次', left: '再 {n} 次驚險閃避', m: 'graze', kind: 'skill', tier: 1, base: 14, pfl: 1.5 },
+  pjump_total: { text: '完美跳躍 {n} 次', left: '再 {n} 次完美跳躍', m: 'pjump', kind: 'skill', tier: 2, base: 4, pfl: 2 },
+  pjump_run: { text: '一局內完美跳躍 {n} 次', left: '再 {n} 次完美跳躍', m: 'pjump', run: true, kind: 'skill', tier: 3, base: 2, pfl: 2, cap: 12 },
+  proll_total: { text: '完美翻滾 {n} 次', left: '再 {n} 次完美翻滾', m: 'proll', kind: 'skill', tier: 2, base: 5, pfl: 2 },
+  proll_run: { text: '一局內完美翻滾 {n} 次', left: '再 {n} 次完美翻滾', m: 'proll', run: true, kind: 'skill', tier: 3, base: 2, pfl: 2, cap: 12 },
+  trick_run: { text: '一局內完成 {n} 個花式動作', left: '再完成 {n} 個花式動作', m: 'trick', run: true, kind: 'skill', tier: 2, base: 16, pfl: 2, cap: 60 },
+  combo_run: { text: '連擊達到 ×{n}', left: '再接 {n} 個連擊', m: 'combo', run: true, kind: 'skill', tier: 2, base: 6, slope: 0.01, pfp: 0.3, minPf: 0.9, cap: 10 },
+  triple_total: { text: '完成「貓步三連」{n} 次', left: '再完成 {n} 次貓步三連', m: 'triple', kind: 'skill', tier: 3, base: 3, pfp: 0.8, from: 3, minPf: 1, cap: 14 },
+  rush_total: { text: '發動 TABBY RUSH {n} 次', left: '再發動 {n} 次 RUSH', m: 'rush', kind: 'skill', tier: 2, base: 3, pfp: 0.5, from: 2, minPf: 1, cap: 25 },
+  rush_run: { text: '一局內發動 TABBY RUSH {n} 次', left: '再發動 {n} 次 RUSH', m: 'rush', run: true, kind: 'skill', tier: 3, base: 2, pfp: 0.5, from: 8, minPf: 1, cap: 6 },
+  smash_run: { text: '一局內 RUSH 撞飛 {n} 個障礙', left: '再撞飛 {n} 個障礙', m: 'smash', run: true, kind: 'skill', tier: 3, base: 6, from: 4, minPf: 1, cap: 40 },
   power_run: { text: '一局內撿到 {n} 個道具', left: '再撿 {n} 個道具', m: 'power', run: true, kind: 'skill', tier: 3, base: 5, cap: 14 },
 };
 export const FIRST_SET = ['coin_run', 'dist_run', 'power_total'];   // level 1: teach the basics
 export const KINDS = ['perf', 'sum', 'skill'];
 
 const COUNTERS = ['coin', 'dist', 'clean', 'score', 'graze', 'pjump', 'proll', 'trick', 'combo', 'triple',
-  'rush', 'smash', 'power', 'jet', 'boost', 'runs'];
+  'rush', 'smash', 'power', 'jet', 'boost', 'runs', 'peak'];
 const zeroCounters = () => Object.fromEntries(COUNTERS.map((k) => [k, 0]));
 /** Short label of a counter for the in-run objective row. */
 const TAGS = {
   coin: '金幣', dist: '距離', clean: '平安距離', score: '分數', graze: '驚險閃避', pjump: '完美跳躍', proll: '完美翻滾',
   trick: '花式動作', combo: '連擊', triple: '貓步三連', rush: 'RUSH', smash: '撞飛', power: '道具', jet: '噴射背包',
-  boost: '加速帶', runs: '局數',
+  boost: '加速帶', runs: '局數', peak: '尖峰時段',
 };
 const UNITS = { dist: ' m', clean: ' m' };
 
@@ -124,7 +128,7 @@ const clampN = (v, a, b) => Math.max(a, Math.min(b, v));
  */
 export function goalFor(id, lvl, prof = null) {
   const t = MISSIONS[id], r = t.r || 1, L = clampN(lvl, 0, 60);
-  const pf = prof ? prof.pf : 1, f = pf ** (t.pfp ?? 1);
+  const pf = prof ? prof.pf : 1, f = pf ** (pf < 1 ? (t.pfl ?? t.pfp ?? 1) : (t.pfp ?? 1));
   let raw;
   if (L === 0 && t.first) raw = t.first * clampN(pf, 0.5, 1.25);
   else {
@@ -212,8 +216,14 @@ function regoal(slot, lvl, prof) {
 
 function makeSlot(id, lvl, prof) { return { id, goal: goalFor(id, lvl, prof), prog: 0, done: false }; }
 
-/** Can mission `id` be dealt at mission level `lvl`? (Old saves may still hold ones that no longer are.) */
-const dealable = (id, lvl) => MISSIONS[id].deal !== false && lvl >= (MISSIONS[id].from || 0);
+/**
+ * Can mission `id` be dealt at mission level `lvl` to a player with pace profile `prof` (null = not known yet)? Old
+ * saves may still hold ones that no longer are; a slot already held is never taken away.
+ */
+const dealable = (id, lvl, prof) => {
+  const t = MISSIONS[id];
+  return t.deal !== false && lvl >= (t.from || 0) && !(prof && prof.pf < (t.minPf || 0));
+};
 
 /**
  * A new mission whose counter isn't used by `others`, avoiding `avoid` ids when possible.
@@ -221,7 +231,7 @@ const dealable = (id, lvl) => MISSIONS[id].deal !== false && lvl >= (MISSIONS[id
  */
 function newSlot(lvl, others, avoid = [], kind = null, prof = null) {
   const usedM = new Set(others.map((s) => MISSIONS[s.id].m));
-  const ok = Object.keys(MISSIONS).filter((id) => dealable(id, lvl) && !usedM.has(MISSIONS[id].m));
+  const ok = Object.keys(MISSIONS).filter((id) => dealable(id, lvl, prof) && !usedM.has(MISSIONS[id].m));
   const ofKind = kind ? ok.filter((id) => MISSIONS[id].kind === kind) : ok;
   const base = ofKind.length ? ofKind : ok;
   const pool = base.filter((id) => !avoid.includes(id));
@@ -698,7 +708,7 @@ export function frame(game) {
 }
 
 /**
- * Count a run event: 'coin' (n), 'power' (type), 'rush', 'boost', 'smash', 'triple', 'stumble'.
+ * Count a run event: 'coin' (n), 'power' (type), 'rush', 'boost', 'smash', 'triple', 'peak' (a cleared 尖峰時段), 'stumble'.
  */
 export function track(ev, a = 1) {
   if (!run.active) return;
@@ -772,12 +782,13 @@ export function endRun(game) {
   commit();
   const lvl = settle();
   persist();
-  // the coin ledger of this run: what was picked up, what a revive cost, what was paid on top, what reached the bank
-  const bank = nat(game.bank), gross = nat(run.c.coin);
+  // the coin ledger of this run: what was picked up, the 尖峰時段 bonus (main.js G.peakCoins: in game.coins, not a pick-up),
+  // what a revive cost, what was paid on top, what reached the bank
+  const bank = nat(game.bank), gross = nat(run.c.coin), peak = nat(game.peakCoins);
   const daily = game.daily && game.daily.reward ? nat(game.daily.reward.coins) : 0;
   const delta = bank - (ran ? run.bank0 : bank - nat(game.coins));
   const ledger = {
-    gross, revive: Math.max(0, gross + daily + run.reward - delta), mission: run.reward - run.setReward,
+    gross, peak, revive: Math.max(0, gross + peak + daily + run.reward - delta), mission: run.reward - run.setReward,
     set: run.setReward, daily, delta,
   };
   const out = {

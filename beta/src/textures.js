@@ -7,6 +7,9 @@ export function makeCanvas(w, h) {
   return c;
 }
 
+/** Phones / tablets (touch is the main pointer): the memory- and fill-saving variants of the art and effects. */
+export const isCoarsePointer = () => typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+
 export function rng(seed) {
   let s = seed >>> 0 || 1;
   return () => {
@@ -287,7 +290,10 @@ function drawEnd(g, ox, oy, v, front) {
 }
 
 export function trainAtlasCanvas(v, decals, seed) {
-  const c = makeCanvas(1024, 512), g = c.getContext('2d'), r = rng(seed);
+  // phones: half-size atlas (ten of them: ~28 MB of GPU memory -> ~7 MB); the drawing below stays in 1024x512 units
+  const half = isCoarsePointer();
+  const c = makeCanvas(half ? 512 : 1024, half ? 256 : 512), g = c.getContext('2d'), r = rng(seed);
+  if (half) { g.setTransform(0.5, 0, 0, 0.5, 0, 0); g.imageSmoothingQuality = 'high'; }   // the graffiti decals shrink 2x more
   drawSide(g, v, decals, r);
   drawEnd(g, 0, 256, v, true);
   drawEnd(g, 256, 256, v, false);

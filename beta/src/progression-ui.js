@@ -1,9 +1,10 @@
 import { POWER_META } from './ui.js';
+import { TIERS, tierOf, levelsToNext, nextTier, tierUp, tierIcon } from './tiers.js';
 
 /*
- * Views for src/progression.js: the 商店 screen, mission cards (menu / pause / game over),
- * the in-run banners ("任務完成！+金幣", "任務快完成"), the HUD objective row and the "what next" guidance
- * (menu 下一個目標 card, game-over 下一步 line, coin ledger).
+ * Views for src/progression.js: the 商店 screen, mission cards (menu / pause / game over) with the 段位 badge of the
+ * mission level (src/tiers.js), the in-run banners ("任務完成！+金幣", "任務快完成"), the HUD objective row and the
+ * "what next" guidance (menu 下一個目標 card, game-over 下一步 line, coin ledger).
  * Markup lives in index.html (#menu-meta, #shop, #pause-missions, #go-meta, #mission-toast); the guidance elements
  * are built here and styled by the CSS block below, which this module injects itself.
  */
@@ -25,6 +26,45 @@ const ICONS = { target: TARGET, flame: FLAME, flag: FLAG };
 
 const restart = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
 const secText = (s) => (Number.isInteger(s) ? String(s) : s.toFixed(1));
+
+/* ---------- 段位 badges: an <img> per place; a file that fails to load is hidden and remembered, the text stays ---------- */
+
+const badFiles = new Set();   // tier ids whose image did not load
+
+/** A badge <img>; `host` gets the class `no-art` while the current tier's file is missing (CSS shows a colour dot or a plain layout). */
+function badgeImg(host) {
+  const img = document.createElement('img');
+  img.className = 'tier-badge';
+  img.alt = '';
+  img.addEventListener('error', () => { badFiles.add(img.dataset.tier); img.hidden = true; host.classList.add('no-art'); });
+  return img;
+}
+
+function paintBadge(img, host, t) {
+  const bad = badFiles.has(t.id);
+  host.classList.toggle('no-art', bad);
+  img.hidden = bad;
+  if (!bad && img.dataset.tier !== t.id) img.src = tierIcon(t);
+  img.dataset.tier = t.id;
+}
+
+/** One `.mis-lvl`: badge before it, 「銅牌 Lv.7」 inside it, a spoken label on the title. `lvl` is 0-based. */
+function paintLevel(el, lvl) {
+  const key = String(lvl);
+  if (el.dataset.lv === key) return;
+  el.dataset.lv = key;
+  const t = TIERS[tierOf(lvl)], title = el.parentElement;
+  let img = title.querySelector('.tier-badge');
+  if (!img) { img = badgeImg(el); el.before(img); }
+  paintBadge(img, el, t);
+  el.style.setProperty('--tc', t.color);
+  const name = document.createElement('i');
+  name.className = 'tier-name';
+  name.textContent = t.name;
+  el.replaceChildren(name, document.createTextNode(` Lv.${lvl + 1}`));
+  title.setAttribute('role', 'img');
+  title.setAttribute('aria-label', `任務段位 ${t.name}，等級 ${lvl + 1}`);
+}
 
 const CSS = `
 /* ---------- meta guidance: reward chips, 下一個目標 card, game-over 下一步 / ledger, HUD objective (src/progression-ui.js) ---------- */
@@ -111,6 +151,35 @@ const CSS = `
 #mission-toast[data-kind="near"] .mt-ico { background: var(--sun); color: var(--ink); }
 #mission-toast[data-kind="near"] .mt-title { color: #c25a00; }
 #mission-toast[data-kind="near"].show { animation-duration: 2.1s; }
+
+/* 段位 badges (src/tiers.js): beside every mission level, big on the game-over card when a tier is crossed */
+.tier-badge { width: 22px; height: 22px; margin: -3px 2px -3px 1px; vertical-align: middle; object-fit: contain; }
+.tier-name { font: 900 13px/1 var(--font-cjk); font-style: normal; letter-spacing: 0; color: var(--ink); }
+.mis-title .mis-lvl { white-space: nowrap; }
+.mis-lvl.no-art::before { content: ''; display: inline-block; width: 10px; height: 10px; box-sizing: border-box; margin-right: 4px;
+  border: 2px solid var(--ink); border-radius: 50%; background: var(--tc, var(--sun)); vertical-align: 1px; }
+@media (max-height: 740px) { .tier-badge { width: 20px; height: 20px; } }
+/* the menu header (title + 起跑倍率 + 商店) has no room to spare: it tightens by its own width, not the screen's */
+#menu-meta .mis-head { container: mishead / inline-size; }
+@container mishead (max-width: 340px) {
+  .mis-title { font-size: 14px; }
+  .mis-title b.mis-lvl { margin-left: 0; font-size: 16px; }
+  .tier-name { font-size: 12px; }
+  .tier-badge { width: 20px; height: 20px; margin-inline: 0 1px; }
+  .mis-mult { padding-inline: 5px; font-size: 11px; }
+  .mis-mult b { font-size: 14px; }
+  .btn.btn-shop { font-size: 16px; padding: 7px 9px 8px 5px; gap: 4px; }
+  .btn-shop img { width: 24px; height: 24px; }
+}
+@container mishead (max-width: 296px) { .mis-mult { font-size: 0; } .mis-mult b { font-size: 14px; } }   /* 320 px phones: just 「×8」 */
+.go-levelup:not(.no-art) { grid-template-columns: auto minmax(0, 1fr); column-gap: 10px; text-align: left; }
+.go-levelup .tier-badge { grid-row: 1 / span 2; align-self: center; margin: 0; }
+.go-levelup.tier-up .tier-badge { width: 72px; height: 72px; filter: drop-shadow(0 3px 0 rgba(59, 29, 14, 0.35));
+  animation: tier-pop 0.6s 0.5s ease-out both; }
+@media (max-height: 740px) { .go-levelup.tier-up .tier-badge { width: 56px; height: 56px; } }
+@keyframes tier-pop { 0% { transform: scale(0.6); } 60% { transform: scale(1.15); } 100% { transform: none; } }
+@media (prefers-reduced-motion: reduce) { .go-levelup.tier-up .tier-badge { animation: none; } }
+body.fx-calm .go-levelup.tier-up .tier-badge { animation: none; }
 `;
 
 function injectStyles() {
@@ -221,8 +290,13 @@ export class MetaUI {
   }
 
   head(st) {
-    for (const el of document.querySelectorAll('.mis-lvl')) el.textContent = `Lv.${st.lvl + 1}`;
+    for (const el of document.querySelectorAll('.mis-lvl')) paintLevel(el, st.lvl);
     for (const el of document.querySelectorAll('.mis-mult b')) el.textContent = `×${1 + st.bonus}`;
+    const meta = $('menu-meta');
+    if (meta) {
+      const n = levelsToNext(st.lvl), tip = n ? `再升 ${n} 級晉升${nextTier(st.lvl).name}` : '已是最高段位';
+      if (meta.title !== tip) meta.title = tip;
+    }
     const mult = document.querySelector('#menu-meta .mis-mult');
     if (mult) {
       mult.title = st.maxed ? `起跑倍率已達上限・每組任務全部完成可領 ${fmt.format(st.setBonus)} 金幣`
@@ -417,15 +491,15 @@ export class MetaUI {
   /* ---------- in-run banner ---------- */
 
   missionDone(text, reward = 0) {
-    this.sfx('powerup', { vol: 0.55, rate: 1.35 });
+    this.sfx('mission', { vol: 0.45 });
     this.push({ title: '任務完成！', text, kind: 'done', reward });
   }
 
   allDone(bonus, now = false, reward = 0) {
-    if (now) this.sfx('newbest', { vol: 0.5 });
     const capped = bonus >= this.api.MAX_BONUS;
     const mult = capped ? '起跑倍率已達上限' : `起跑倍率 ×${1 + bonus}${now ? '' : '（下一局生效）'}`;
-    this.push({ title: now ? '任務等級提升！' : '三個任務全部完成！', text: mult, kind: 'all', reward });
+    // in a run the game-over card plays the levelup fanfare; a level-up settled on the menu has no card, so its banner plays it
+    this.push({ title: now ? '任務等級提升！' : '三個任務全部完成！', text: mult, kind: 'all', reward, fanfare: now });
   }
 
   banner(title, icon) {
@@ -461,6 +535,7 @@ export class MetaUI {
     el.dataset.kind = item.kind;
     const ico = el.querySelector('.mt-ico');
     ico.innerHTML = item.icon ? `<img src="${item.icon}" alt="">` : item.kind === 'near' ? TARGET : CHECK;
+    if (item.fanfare) this.sfx('levelup', { vol: 0.375 });   // when the banner shows, not when it is queued
     el.querySelector('.mt-title').textContent = item.title;
     const t = el.querySelector('.mt-text');
     t.textContent = item.text;
@@ -479,6 +554,7 @@ export class MetaUI {
     this.queue.length = 0;
     this.cur = null;
     clearTimeout(this.toastTimer);
+    clearTimeout(this.levelT);
     this.toastBusy = false;
     const el = $('mission-toast');
     if (el) { el.classList.remove('show'); el.hidden = true; }
@@ -494,6 +570,7 @@ export class MetaUI {
     this.countUp($('go-bank'), r.bank - L.delta, r.bank);
     // coin ledger: only when something besides the pickups moved the bank
     const parts = [];
+    if (L.peak) parts.push(`尖峰時段 +${fmt.format(L.peak)}`);
     if (L.revive) parts.push(`復活 −${fmt.format(L.revive)}`);
     if (L.mission) parts.push(`任務 +${fmt.format(L.mission)}`);
     if (L.set) parts.push(`全部完成 +${fmt.format(L.set)}`);
@@ -505,18 +582,28 @@ export class MetaUI {
     }
     const up = $('go-levelup');
     up.hidden = !r.levelUp;
-    if (r.levelUp) {
-      up.querySelector('span').textContent = `任務等級 Lv.${r.lvl + 1}・${r.maxed ? '起跑倍率已達上限' : `起跑倍率 ×${1 + r.bonus}`}${r.setBonus ? `・獎勵 +${fmt.format(r.setBonus)} 金幣` : ''}`;
-    }
+    if (r.levelUp) this.paintLevelUp(up, r);
     // the finished set (before any level-up swap): this run's value for single-run missions, totals + gain otherwise
-    for (const el of document.querySelectorAll('#go-meta .mis-lvl')) el.textContent = `Lv.${r.lvl + 1 - (r.levelUp ? 1 : 0)}`;
+    for (const el of document.querySelectorAll('#go-meta .mis-lvl')) paintLevel(el, r.lvl - (r.levelUp ? 1 : 0));
     $('go-missions').replaceChildren(...r.slots.map((s) => this.missionItem(s, {
       fresh: s.fresh, value: s.run ? s.runVal : s.prog, gain: s.gain, tag: s.run ? '本局 ' : '',
     })));
     this.renderOverNext(r);
     const retry = $('btn-retry');
     if (retry && r.retry) retry.textContent = r.retry;
-    if (r.levelUp) setTimeout(() => this.sfx('newbest', { vol: 0.45, rate: 1.1 }), 700);
+    if (r.levelUp) this.levelT = setTimeout(() => this.sfx('levelup', { vol: tierUp(r.lvl) ? 0.41 : 0.34 }), 700);
+  }
+
+  /** The 任務全部完成 box: a 段位 badge beside the new level, big with a pop when the level moved into a new tier. */
+  paintLevelUp(up, r) {
+    const t = TIERS[tierOf(r.lvl)], crossed = tierUp(r.lvl), next = nextTier(r.lvl);
+    let img = up.querySelector('.tier-badge');
+    if (!img) { img = badgeImg(up); up.firstElementChild.before(img); }
+    paintBadge(img, up, t);
+    up.classList.toggle('tier-up', crossed);
+    up.querySelector('b').textContent = crossed ? `晉升「${t.name}」！` : '任務全部完成！';
+    const mult = r.maxed ? '起跑倍率已達上限' : `起跑倍率 ×${1 + r.bonus}`;
+    up.querySelector('span').textContent = `任務等級 Lv.${r.lvl + 1}・${mult}${r.setBonus ? `・獎勵 +${fmt.format(r.setBonus)} 金幣` : ''}${!crossed && next ? `・再 ${levelsToNext(r.lvl)} 級升${next.name}` : ''}`;
   }
 
   /** 下一步 line: what killed the hero (when known) + the single most useful next step. */
@@ -614,8 +701,7 @@ export class MetaUI {
     const r = this.rows[type];
     const res = this.api.buy(type);
     if (res === 'ok') {
-      this.sfx('coin', { vol: 0.7, rate: 1.2 });
-      this.sfx('powerup', { vol: 0.6, rate: 1.1 });
+      this.sfx('buy', { vol: 0.525 });
       this.refreshShop();
       restart(r.li, 'bought');
       restart($('shop-bank').parentElement, 'bump');

@@ -19,10 +19,12 @@ import { UI, POWER_META, RUSH_ICON } from './ui.js';
 import { TRICK, TRICK_BIT, TRICK_ALL, TRICK_LABEL } from './tricks.js';
 import * as progression from './progression.js';
 import * as cosmetics from './cosmetics.js';
+import { BETA } from './channel.js';
 import { DAILY, DailyUI, dailyToday, dailyStatus, mulberry32, rowHook, completeDaily, recordDaily, dayKey } from './daily.js';
 import { REVIVE, ReviveOverlay, reviveCost, clearForRevive } from './revive.js';
 import { THEMES, ZONE, themeIndexAt } from './themes.js';
 import { TUNNEL, resetDirector, nextTunnel } from './director.js';
+import { PEAK } from './peak.js';
 import { settings, FXP, vibrate } from './settings.js';
 import { SettingsUI } from './settings-ui.js';
 import { HelpUI } from './help-ui.js';
@@ -30,6 +32,7 @@ import { NameUI } from './name-ui.js';
 import { recordLocal, submitRemote, initRemote, flushPending, playerName, seedLocal, remote } from './leaderboard.js';
 import { BoardUI } from './board-ui.js';
 import { WishUI } from './wish-ui.js';
+import { initChangelog, checkNewVersion } from './changelog.js';
 import { parseChallenge, shareChallenge, gameUrl } from './challenge.js';
 import { scoreCard } from './scorecard.js';
 import { DistanceMarkers } from './marker.js';
@@ -43,7 +46,7 @@ renderer.toneMappingExposure = 1.02;
 renderer.shadowMap.enabled = true;
 const coarsePointer = window.matchMedia && window.matchMedia('(pointer: coarse)').matches; // phones / tablets
 renderer.shadowMap.type = coarsePointer ? THREE.PCFShadowMap : THREE.PCFSoftShadowMap;
-setAniso(Math.min(8, renderer.capabilities.getMaxAnisotropy()));
+setAniso(Math.min(coarsePointer ? 4 : 8, renderer.capabilities.getMaxAnisotropy())); // phones: 4 taps at grazing angles
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(58, 1, 0.3, 1800); // near 0.3: 3x the depth precision (no z-fighting far out)
@@ -123,7 +126,7 @@ const G = {
   power: { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 },
   best: store.get('best', 0), bank: store.get('bank', 0),
   deathT: 0, flash: 0, camBlend: 1, dustT: 0, sparkT: 0,
-  rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, smashPopT: 0,
+  rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, smashPopT: 0, peakMul: 1, peakIdx: -1, peakOk: false, peakClear: null,
 };
 let world, coins, spawner, player, fx, drone, markers;
 const feverFrame = document.getElementById('fever-frame');
@@ -160,6 +163,7 @@ initRemote().then(() => { if (G.state === 'menu') showChallenge(); }); // before
 seedLocal(G.best, progression.bestDist());
 const boardUI = new BoardUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) });
 new WishUI(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) }); // 許願池
+initChangelog(ui, { click: () => audio.play('ui_click', { vol: 0.6 }) }); // 更新日誌 card, v1.x pill, 「已更新到」 banner
 settings.onChange((k) => {
   if (k === 'music' || k === 'sfx') audio.setVolumes(settings.get('music'), settings.get('sfx'));
   if ((k === 'fx' || k === 'calm') && world) { applyLook(); idleFrames = 0; }
@@ -415,7 +419,7 @@ function startRun(daily = false) {
   audio.music('game');
   Object.assign(G, {
     state: 'play', dist: 0, score: 0, coins: 0, time: 0, timeScale: 1, deathT: 0, deathCause: null, speed: C.BASE_SPEED,
-    rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, rushCool: 0,
+    rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, rushCool: 0, peakMul: 1, peakIdx: -1, peakOk: false, peakClear: null, peakCoins: 0,
   });
   G.power = { magnet: 0, sneakers: 0, x2: 0, shield: false, jetpack: 0 };
   progression.startRun(G, daily); // run counters + start-with-shield upgrade (none in the daily challenge)
@@ -476,28 +480,15 @@ function updateMarkers() {
 
 function showChallenge() {
   $('vs-banner').hidden = !G.vs;
-  // one-time "what's new" chip for this update (hidden while a friend's challenge banner is up); a tap opens the 造型店
-  $('news-text').textContent = '造型店・任務獎勵・更快更刺激';
-  $('news-chip').hidden = !!G.vs || newsSeen();
   if (!G.vs) return;
   $('vs-name').textContent = G.vs.name;
   $('vs-score').textContent = fmtN(G.vs.score);
 }
-const NEWS_ID = '2026-10-08';
-const NEWS_ALL = `${NEWS_ID}+world`;
-let newsDismissed = false; // this session (the world board may turn on right after a tap on a slow network)
-const newsSeen = () => { const v = store.get('news', ''); return newsDismissed || v === NEWS_ALL || (v === NEWS_ID && !remote.on); };
 window.addEventListener('hashchange', () => {
   const vs = parseChallenge();
   if (!vs) return;
   G.vs = vs;
   if (G.state === 'menu') showChallenge();
-});
-$('news-chip').addEventListener('click', () => {
-  newsDismissed = true;
-  store.set('news', remote.on ? NEWS_ALL : NEWS_ID);
-  $('news-chip').hidden = true;
-  $('btn-cshop')?.click();
 });
 $('vs-close').addEventListener('click', () => {
   audio.play('ui_click', { vol: 0.6 });
@@ -518,6 +509,7 @@ function boardOver(score) {
   const where = run.day ? '今日挑戰' : '我的紀錄';
   el.textContent = rank ? `${where}第 ${rank} 名${rank === 1 ? '！' : ''}` : '';
   if (assisted) el.textContent = (el.textContent ? el.textContent + '・' : '') + '道具局・不計入全球排行';
+  else if (BETA) el.textContent = (el.textContent ? el.textContent + '・' : '') + '測試版・不計入全球排行';
   el.hidden = !el.textContent;
   (assisted ? Promise.resolve(null) : submitRemote(run)).then((r) => {
     if (!r || G.lastRun !== run || G.state !== 'over') return;
@@ -629,8 +621,21 @@ function grantPower(type, at = G.dist) {
   }
 }
 
+/** 尖峰時段 cleared without a crash: the bonus coins + the peak counter (missions). */
+function payPeak() {
+  const e = G.peakClear;
+  G.peakClear = null;
+  G.peakOk = false;
+  G.coins += e.bonus; // banked with the run; coin missions only count pick-ups
+  G.peakCoins += e.bonus; // for the game-over coin ledger (progression.js)
+  progression.track('peak');
+  ui.toast(`撐過尖峰時段！+${fmtN(e.bonus)}`, 'assets/ui/icon_coin.webp', 'sun');
+  audio.play('mission', { vol: 0.45 });
+}
+
 function runSpeed() {
-  return G.speed * Math.min(C.SPEED_MULT_CAP, (G.fever > 0 ? C.FEVER_SPEED : 1) * (G.surge > 0 ? C.SURGE_SPEED : 1));
+  // 尖峰時段 adds its ×1.08 inside the same cap (top speed stays 42 × 1.5 m/s)
+  return G.speed * Math.min(C.SPEED_MULT_CAP, (G.fever > 0 ? C.FEVER_SPEED : 1) * (G.surge > 0 ? C.SURGE_SPEED : 1) * G.peakMul);
 }
 
 /* ---------- speed-boost surge ---------- */
@@ -867,6 +872,8 @@ function crash(o, side = false) {
   }
   player.crashed = true;
   cosmetics.event('crash');
+  G.peakOk = false; // a crash inside 尖峰時段 (even one revived from) forfeits its bonus
+  G.peakClear = null;
   G.state = 'dying';
   G.deathT = 0;
   // what ended the run, for the game-over card: 'moving' | 'train' | 'side' | 'hurdle' | 'overhead' | ...
@@ -1122,6 +1129,13 @@ function stepWorld(dt, speed) {
     if (e.type === 'horn') audio.play('train_horn', { vol: 0.5, pan: lanePan(e.lane) });
     else if (e.type === 'swerve') audio.play('train_horn', { vol: 0.85, rate: 1.18, pan: lanePan(e.lane) }); // lane-switch telegraph
     else if (e.type === 'setpiece' && G.state === 'play') ui.toast('屋頂跑酷！', null, 'hot');
+    else if (e.type === 'peak' && G.state === 'play') {
+      // 尖峰時段 (peak.js): a warning ~95 m ahead, a coin bonus for getting through it (a crash on the way forfeits it)
+      if (e.phase === 'warn') { ui.toast('尖峰時段來了！', 'assets/ui/icon_peak.webp', 'hot'); audio.play('peak', { vol: 0.52 }); }
+      else if (e.phase === 'start') { G.peakIdx = e.idx; G.peakOk = true; }
+      // paid after this frame's collisions (updatePlay), and only for a span run through without a crash (a revive doesn't count)
+      else if (e.phase === 'clear' && G.peakOk && G.peakIdx === e.idx) G.peakClear = e;
+    }
     else if (e.type === 'pass') {
       audio.play('train_pass', { vol: 0.45, pan: lanePan(e.lane) });
       // an oncoming train screaming past in the next lane counts as a near miss
@@ -1134,12 +1148,14 @@ function updatePlay(dt) {
   G.time += dt;
   G.speed = C.speedAt(G.dist);
   if (G.mod === 'fast') G.speed = Math.max(G.speed, DAILY.fastSpeed);
+  G.peakMul = C.damp(G.peakMul, spawner.peakAt(G.dist) ? PEAK.speed : 1, 3, dt);
   const v = runSpeed();
   stepWorld(dt, v);
   handlePlayerEvents(player.update(dt, {
     dist: G.dist, speed: v, spawner, power: G.power, jetpack: G.power.jetpack > 0, invincible: G.fever > 0,
   }));
   if (G.state !== 'play') return;
+  if (G.peakClear) payPeak();
   updateReviveGlow(dt);
   updateDaily();
   updateMarkers();
@@ -1263,7 +1279,12 @@ function frame(now) {
   // a menu nobody has touched for 40 s idles at ~12 fps (laptops left open stay cool); any input brings it back
   if (now - last < (G.state === 'menu' ? (now - lastInput > 40000 ? 80 : 30) : 10.5)) return;
   if (G.state === 'pause' || G.state === 'over' || G.state === 'revive' || (G.state === 'menu' && OVERLAYS.has(document.body.dataset.screen))) {
-    if (++idleFrames > 3 && G.state !== 'revive') { last = now; return; }
+    if (++idleFrames > 3) {
+      // the revive countdown runs on raw time: it keeps ticking while the frozen scene is no longer redrawn
+      if (G.state === 'revive' && !(window.__tabby && window.__tabby.lock)) updateRevive(Math.min(0.1, (now - last) / 1000));
+      last = now;
+      return;
+    }
   } else idleFrames = 0;
   // up to 0.1 s per frame: a slow phone (10-20 fps) still plays at full speed instead of in slow motion
   let raw = Math.min(0.1, (now - last) / 1000);
@@ -1328,7 +1349,7 @@ const KEYS = {
   ArrowLeft: 'left', KeyA: 'left', ArrowRight: 'right', KeyD: 'right',
   ArrowUp: 'jump', KeyW: 'jump', Space: 'jump', ArrowDown: 'roll', KeyS: 'roll',
 };
-const OVERLAYS = new Set(['settings', 'board', 'shop', 'help', 'name', 'wish', 'cshop']);
+const OVERLAYS = new Set(['settings', 'board', 'shop', 'help', 'name', 'wish', 'cshop', 'changelog']);
 window.addEventListener('keydown', (e) => {
   if (glLost || OVERLAYS.has(document.body.dataset.screen)) return; // their own handlers take the keys
   if (G.state === 'play') {
@@ -1429,12 +1450,12 @@ async function boot() {
   G.camBlend = 0;
   ui.show('menu');
   cosmetics.menu(); // announces achievement unlocks once
-  if (progression.runsPlayed() === 0) store.set('news', NEWS_ALL); // brand-new players have nothing to compare with
   showChallenge();
+  checkNewVersion({ fresh: progression.runsPlayed() === 0 }); // one-time 「已更新到 v1.x」 banner; brand-new players are marked silently
   flushPending();
   requestAnimationFrame(frame);
   if (location.hash === '#debug' || new URLSearchParams(location.search).has('debug')) window.__tabby = { G, player, spawner, startRun, grantPower, addRush, nearMiss, awardTrick, triggerRush, startSurge, progression, cosmetics };
-  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu, scene });
+  if (window.__tabby) Object.assign(window.__tabby, { crash, offerRevive, acceptRevive, declineRevive, dailyUI, world, zone, ZONE, TUNNEL, THEMES, frame, composer, markers, boardUI, settings, toMenu, scene, fx, audio });
   // Browsers grant audio on pointerup / touchend / click / keydown (not touch pointerdown):
   // keep listening until the context is really running.
   const GESTURES = ['pointerup', 'touchend', 'click', 'keydown'];

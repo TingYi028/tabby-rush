@@ -22,7 +22,10 @@
 /* tabs */
 .cs-tabs { display: flex; gap: 6px; }
 .cs-tab { position: relative; flex: 1 1 0; min-width: 0; min-height: 42px; padding: 6px 2px; border: 3px solid var(--ink); border-radius: 14px;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
   background: #f1e3c4; box-shadow: 0 3px 0 var(--ink); color: var(--ink); font: 900 15px/1 var(--font-cjk); cursor: pointer; white-space: nowrap; }
+.cs-tab-ico { flex: none; width: 20px; height: 20px; object-fit: contain; }
+.cs-tab:not([aria-selected="true"]) .cs-tab-ico { opacity: 0.7; }
 .cs-tab[aria-selected="true"] { background: linear-gradient(#ffdc55, #ff9e22); color: var(--white); text-shadow: var(--ol-sm); }
 .cs-tab:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
 .cs-dot { position: absolute; top: -5px; right: -3px; width: 13px; height: 13px; box-sizing: border-box; border: 2px solid var(--ink);
@@ -131,7 +134,7 @@
 .arm-btn { position: relative; display: inline-flex; align-items: center; gap: 4px; min-height: 44px; box-sizing: border-box; padding: 3px 11px 3px 5px;
   border: 3px solid var(--ink); border-radius: 999px; background: #e9dcc0; color: var(--ink); cursor: pointer;
   box-shadow: 0 3px 0 var(--ink); font: 900 17px/1 var(--font-display); font-variant-numeric: tabular-nums; }
-.arm-btn img { width: 32px; height: 32px; filter: grayscale(0.85) opacity(0.7); }
+.arm-btn img { width: 32px; height: 32px; object-fit: contain; filter: grayscale(0.85) opacity(0.7); }
 .arm-btn.on { background: linear-gradient(#ffe36b, #ffab1f); }
 .arm-btn.on img { filter: drop-shadow(0 2px 0 rgba(59, 29, 14, 0.4)); }
 .arm-btn s { position: absolute; top: -7px; right: -5px; display: none; place-items: center; width: 20px; height: 20px; box-sizing: border-box;
@@ -168,7 +171,9 @@
   .cs-pv { width: 56px; height: 70px; }
   .cs-act { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
   .cs-buy { min-width: 88px; }
-  .cs-tab { font-size: 14px; }
+  /* five tabs are ~55 px wide here: the icon goes above the label */
+  .cs-tab { flex-direction: column; gap: 2px; padding: 4px 2px 5px; font-size: 12px; }
+  .cs-tab-ico { width: 18px; height: 18px; }
 }
 @media (max-width: 340px) { .cs-arm span { font-size: 11px; } .cs-card { padding-inline: 10px; } }
 /* short screens (landscape phones): the list gets the height, descriptions get shorter */
@@ -176,7 +181,8 @@
   .cs-card { gap: 6px; padding: 10px 12px 12px; }
   .cs-card h2 { font-size: 26px; }
   .card .cs-sub { display: none; }
-  .cs-tab { min-height: 34px; font-size: 14px; }
+  .cs-tab { min-height: 34px; padding-block: 4px; font-size: 14px; }
+  .cs-tab-ico { width: 18px; height: 18px; }
   .cs-card .btn-alt { font-size: 17px; padding: 8px 22px 10px; }
   .cs-item { padding-block: 5px; }
   .cs-pv { width: 52px; height: 65px; }

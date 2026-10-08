@@ -1,0 +1,98 @@
+/*
+ * 更新日誌 (src/changelog.js): the changelog card, the version pill at the bottom of the menu, the one-time "已更新到 v1.x"
+ * banner and the row in the 設定 card. Same sticker look as the help / board cards (ink outline, cream card, orange pills);
+ * every class is cl-* so nothing else is touched. Uses the page's custom properties (--ink, --sun, --cream, --font-cjk ...).
+ * The pill and the banner are positioned over the menu and take no room in its layout; they exist only while
+ * body[data-screen="menu"]. The pill is hidden on short landscape phones (the 設定 row reaches the card there).
+ */
+
+/* ---------- the card ---------- */
+#changelog { overflow-y: auto; align-items: safe center; }
+.cl-card { box-sizing: border-box; width: min(500px, 100%); max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; gap: 12px; padding: 20px 16px 22px; }
+.cl-card > * { flex: none; }
+.card .cl-now { margin-top: -6px; font: 700 13px/1.3 var(--font-cjk); color: #7a4a2a; }
+.cl-card > .cl-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; display: grid; align-content: start;
+  gap: 8px; padding: 2px 4px 8px; text-align: left; }
+.cl-list:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; border-radius: 10px; }
+.cl-card .btn-alt { min-height: 44px; }
+
+.cl-item { background: var(--white); border: 3px solid var(--ink); border-radius: 14px; box-shadow: 0 3px 0 var(--ink); }
+.cl-h { margin: 0; font: inherit; }
+.cl-toggle { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "v t c" "v d c"; align-items: center;
+  column-gap: 10px; row-gap: 3px; width: 100%; min-height: 56px; box-sizing: border-box; padding: 8px 10px; border: 0; border-radius: 11px;
+  background: none; color: var(--ink); text-align: left; cursor: pointer; touch-action: manipulation; }
+.cl-toggle:active { background: #fff1c9; }
+.cl-toggle:focus-visible { outline: 3px solid var(--ink); outline-offset: -6px; background: #fff1c9; }
+@media (hover: hover) { .cl-toggle:hover { background: #fff8e6; } }
+.cl-v { grid-area: v; padding: 6px 9px 4px; border-radius: 10px; background: var(--ink); color: var(--sun);
+  font: 20px/1 var(--font-display); letter-spacing: 0.02em; }
+.cl-t { grid-area: t; font: 900 15px/1.3 var(--font-cjk); text-wrap: pretty; }
+.cl-d { grid-area: d; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font: 700 12px/1.2 var(--font-cjk); color: #7a4a2a; }
+.cl-d:empty { display: none; }
+.cl-tag { display: inline-block; padding: 2px 8px 1px; border: 2px solid var(--ink); border-radius: 999px;
+  font: 900 11px/1.3 var(--font-cjk); font-style: normal; white-space: nowrap; }
+.cl-new { background: var(--sun); color: var(--ink); }
+.cl-test { background: #d6f6ef; color: #0d6b5e; }
+.cl-chev { grid-area: c; display: grid; place-items: center; width: 22px; height: 22px; transform: rotate(90deg); transition: transform 0.15s; }
+.cl-chev svg { width: 18px; height: 18px; }
+.cl-open .cl-chev { transform: rotate(-90deg); }
+.cl-items { list-style: none; margin: 0 12px; padding: 10px 0 12px; display: grid; gap: 7px; border-top: 2px dashed #e3d4b3; }
+.cl-items li { position: relative; padding-left: 20px; font: 700 14px/1.5 var(--font-cjk); overflow-wrap: anywhere; text-wrap: pretty; }
+.cl-items li::before { content: ''; position: absolute; left: 3px; top: 0.5em; width: 9px; height: 9px; box-sizing: border-box;
+  border: 2px solid var(--ink); border-radius: 50%; background: var(--tangerine); }
+
+/* ---------- the version pill (bottom right of the menu; the invisible ring around it makes the touch target 44 px) ---------- */
+body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banner { display: none; }
+.cl-ver { position: absolute; z-index: 3; left: calc(max(16px, env(safe-area-inset-left, 0px)) + 62px); top: calc(env(safe-area-inset-top, 0px) + 27px);
+  display: inline-flex; align-items: center; justify-content: center; min-width: 46px; height: 28px; box-sizing: border-box; padding: 0 10px;
+  border: 2px solid var(--ink); border-radius: 999px; background: var(--cream); box-shadow: 0 3px 0 var(--ink); color: var(--ink);
+  font: 14px/1 var(--font-display); letter-spacing: 0.04em; cursor: pointer; opacity: 0.9; touch-action: manipulation; }
+.cl-ver::before { content: ''; position: absolute; inset: -8px -6px; }
+.cl-ver:hover, .cl-ver:focus-visible { opacity: 1; }
+.cl-ver:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.cl-ver:focus-visible, .cl-bn-go:focus-visible, .cl-bn-x:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+
+/* ---------- the "已更新到 v1.x" banner (bottom centre, over the menu; it leaves by itself) ---------- */
+.cl-banner { position: absolute; z-index: 4; left: 50%; bottom: calc(env(safe-area-inset-bottom, 0px) + 14px); transform: translateX(-50%);
+  width: min(430px, calc(100% - 32px)); box-sizing: border-box; display: flex; align-items: center; gap: 8px; padding: 6px 8px 6px 16px;
+  background: var(--cream); border: 3px solid var(--ink); border-radius: 22px;
+  box-shadow: 0 5px 0 var(--ink), 0 14px 30px rgba(0, 0, 0, 0.25); animation: cl-in 0.45s cubic-bezier(0.2, 0.9, 0.3, 1.25); }
+.cl-bn-text { flex: 1 1 auto; min-width: 0; display: grid; gap: 2px; text-align: left; }
+.cl-bn-text b { font: 900 15px/1.2 var(--font-cjk); }
+.cl-bn-sub { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  font: 700 12px/1.3 var(--font-cjk); color: #7a4a2a; }
+.btn.cl-bn-go { flex: none; font-size: 17px; padding: 10px 18px 12px; border-width: 3px; text-shadow: var(--ol-sm);
+  box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.12), inset 0 3px 0 rgba(255, 255, 255, 0.5), 0 4px 0 var(--ink); }
+.btn.cl-bn-go:active { transform: translateY(3px); box-shadow: inset 0 -3px 0 rgba(0, 0, 0, 0.12), 0 1px 0 var(--ink); }
+.icon-btn.cl-bn-x { flex: none; width: 44px; height: 44px; }
+.icon-btn.cl-bn-x svg { width: 20px; height: 20px; }
+@keyframes cl-in { from { opacity: 0; transform: translate(-50%, 24px) scale(0.94); } to { opacity: 1; transform: translateX(-50%); } }
+
+/* ---------- the row in the 設定 card ---------- */
+.cl-set-row { width: 100%; cursor: pointer; font: inherit; color: inherit; touch-action: manipulation; }
+.cl-set-row:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.cl-set-row:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+.cl-set-side { flex: none; display: inline-flex; align-items: center; gap: 6px; }
+.cl-set-side b { padding: 5px 10px 3px; border-radius: 999px; background: var(--ink); color: var(--sun);
+  font: 15px/1 var(--font-display); letter-spacing: 0.02em; }
+.cl-set-row .cl-chev { transform: none; }
+
+/* ---------- small screens ---------- */
+@media (max-width: 360px) { .cl-bn-sub { display: none; } .cl-item .cl-v { font-size: 18px; } }
+@media (max-height: 520px) {
+  .cl-card { width: min(560px, 100%); gap: 6px; padding: 10px 14px 12px; }
+  .cl-card h2 { font-size: 26px; }
+  .card .cl-now { display: none; }
+  .cl-card .btn-alt { font-size: 17px; padding: 8px 22px 10px; }
+  .cl-toggle { min-height: 50px; padding-block: 5px; }
+  .cl-items li { font-size: 13px; line-height: 1.4; }
+  .cl-banner { bottom: calc(env(safe-area-inset-bottom, 0px) + 8px); padding-block: 4px; }
+  .cl-bn-sub { display: none; }
+}
+@media (max-height: 400px) { .cl-card > h2 { display: none; } }  /* the dialog keeps its name for screen readers */
+@media (max-height: 420px) and (min-aspect-ratio: 1001/1000) { .cl-ver { display: none; } }
+
+@media (prefers-reduced-motion: reduce) { .cl-banner { animation: none; } .cl-chev { transition: none; } }
+body.fx-calm .cl-banner { animation: none; }

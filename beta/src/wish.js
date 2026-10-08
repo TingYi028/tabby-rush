@@ -91,7 +91,9 @@ export function isBlocked(clean) {
   return RE.link.test(f) || RE.mail.test(f) || RE.num.test(f) || RE.rep.test(clean) || RE.zh.test(flat) || RE.en.test(words);
 }
 
-/** What the player typed -> { ok: true, text } or { ok: false, reason: 'short' | 'long' | 'rejected' }. */
+/** What the player typed -> { ok: true, text } or { ok: false, reason: 'short' | 'long' | 'rejected' }.
+ *  Prompt-injection screening is deliberately NOT here: the server scans every wish (tr_wish_flags) and holds a flagged one
+ *  back silently, so nothing a player can see, try or measure tells them what the filter looks for. */
 export function checkWish(text) {
   const t = cleanWish(text);
   const n = [...t].length;

@@ -26,6 +26,14 @@ const SVG_CHECK = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l
 
 const restart = (el, cls) => { el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls); };
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+/** A decorative <img> that hides itself when its file is missing (never a broken-image glyph). */
+const softImg = (cls, src) => {
+  const i = el('img', cls);
+  i.alt = '';
+  i.addEventListener('error', () => { i.hidden = true; }, { once: true });
+  i.src = src;
+  return i;
+};
 
 /** "1,200" for coins, km / m / n for achievement progress. */
 function fmtStat(fmtKind, v) {
@@ -108,7 +116,8 @@ export class ShopUI {
     this.live = $('cs-live');
     const tabs = $('cs-tabs');
     for (const t of TABS) {
-      const b = el('button', 'cs-tab', t.label);
+      const b = el('button', 'cs-tab');
+      b.append(softImg('cs-tab-ico', `assets/ui/tab_${t.id}.webp`), t.label);
       b.type = 'button';
       b.id = `cs-tab-${t.id}`;
       b.setAttribute('role', 'tab');
@@ -125,7 +134,7 @@ export class ShopUI {
     $('btn-cs-ok').addEventListener('click', () => this.closeReveal());
     this.reveal.addEventListener('click', (e) => { if (e.target === this.reveal) this.skipReveal(); });
     $('btn-cs-equip').addEventListener('click', () => {
-      if (this.lastReward && this.lastReward.id) { this.api.equip(this.lastReward.id); this.sfx('powerup', { vol: 0.5, rate: 1.2 }); }
+      if (this.lastReward && this.lastReward.id) { this.api.equip(this.lastReward.id); this.sfx('equip', { vol: 0.6 }); }
       this.closeReveal();
     });
 
@@ -310,7 +319,7 @@ export class ShopUI {
   makePreview(c, host) {
     const it = c.it;
     if (it.kind === 'item') {
-      if (it.icon) { const img = el('img', 'cs-icon'); img.src = it.icon; img.alt = ''; host.appendChild(img); }
+      if (it.icon) host.appendChild(softImg('cs-icon', it.icon));
       else { const cv = boxIcon(); cv.className = 'cs-icon'; host.appendChild(cv); }
       return;
     }
@@ -463,7 +472,7 @@ export class ShopUI {
     if (a.owns(id)) {
       if (a.isEquipped(id)) return;
       a.equip(id);
-      this.sfx('powerup', { vol: 0.45, rate: 1.25 });
+      this.sfx('equip', { vol: 0.6 });
       restart(c.li, 'bought');
       this.say(`裝備了「${it.name}」`);
       return;
@@ -489,8 +498,7 @@ export class ShopUI {
   }
 
   bought(c) {
-    this.sfx('coin', { vol: 0.7, rate: 1.2 });
-    this.sfx('powerup', { vol: 0.6, rate: 1.1 });
+    this.sfx('buy', { vol: 0.525 });
     restart(c.li, 'bought');
     const bank = document.querySelector('#cshop .cs-bank');
     if (bank) restart(bank, 'bump');
@@ -546,8 +554,7 @@ export class ShopUI {
       b.setAttribute('aria-pressed', String(on));
       b.setAttribute('aria-label', `${on ? '已帶上' : '不帶'}「${it.name}」，還有 ${a.count(id)} 個。${it.desc}`);
       b.title = `${it.name}：${it.desc}`;
-      const img = el('img'); img.src = it.icon; img.alt = '';
-      b.append(img, el('b', null, `×${a.count(id)}`));
+      b.append(softImg('', it.icon), el('b', null, `×${a.count(id)}`));
       b.insertAdjacentHTML('beforeend', `<s aria-hidden="true">${SVG_CHECK}</s>`);
       b.addEventListener('click', () => { a.setArmed(id, !a.armed(id)); this.sfx('ui_click', { vol: 0.5, rate: on ? 0.9 : 1.2 }); });
       strip.appendChild(b);
@@ -568,16 +575,15 @@ export class ShopUI {
       eq.hidden = true;
       this.reveal.dataset.phase = 'open';
       let head = '', sub = '';
+      this.sfx('box_open', { vol: 0.7 });
       if (r.kind === 'coins') {
         const i = el('img', 'cs-rv-ico'); i.src = COIN; i.alt = '';
         art.appendChild(i);
         head = `+${fmt.format(r.coins)} 金幣`; sub = '已經存進存款';
-        this.sfx('coin', { vol: 0.8, rate: 1.1 });
       } else if (r.kind === 'item') {
-        const it = a.item(r.id), i = el('img', 'cs-rv-ico'); i.src = it.icon; i.alt = '';
-        art.appendChild(i);
+        const it = a.item(r.id);
+        art.appendChild(softImg('cs-rv-ico', it.icon));
         head = `${it.name} ×${r.qty}`; sub = '放進背包了，下一局會帶上';
-        this.sfx('powerup', { vol: 0.7, rate: 1.2 });
       } else {
         const it = a.item(r.id), cv = document.createElement('canvas');
         cv.width = PV_W; cv.height = PV_H; cv.className = 'cs-rv-cv';
@@ -591,7 +597,7 @@ export class ShopUI {
         } catch { drawStage(g, PV_W, PV_H); }
         head = `新外觀：${it.name}`; sub = `${a.RARITY[it.rarity].name}${a.KINDS[it.kind]}`;
         eq.hidden = false;
-        this.sfx('newbest', { vol: 0.7 });
+        this.prizeT = setTimeout(() => this.sfx('newbest', { vol: 0.6 }), 450);   // after the lid pop, not on top of it
       }
       title.textContent = head;
       text.textContent = sub;
@@ -622,6 +628,7 @@ export class ShopUI {
     if (this.reveal.hidden) return;
     if (this.reveal.dataset.phase === 'shake') { this.skipReveal(); return; }   // first tap shows the result, the next closes
     clearTimeout(this.revealT);
+    clearTimeout(this.prizeT);
     this.reveal.hidden = true;
     this.sfx('ui_click', { vol: 0.5 });
     const first = this.cards.find((c) => c.btn.getAttribute('aria-disabled') !== 'true');

@@ -1,15 +1,47 @@
+import { PREFIX } from './channel.js';
 import { Groove } from './music.js';
 
 const SFX = ['coin', 'jump', 'roll', 'lane_switch', 'crash', 'powerup', 'land', 'stumble', 'train_horn',
   'train_pass', 'ui_click', 'gameover', 'newbest', 'shield_break', 'go',
-  'nearmiss', 'jetpack', 'rush', 'smash', 'boing', 'drone'];
+  'nearmiss', 'jetpack', 'rush', 'smash', 'boing', 'drone',
+  'buy', 'equip', 'mission', 'levelup', 'box_open', 'peak'];
 
 // Doppler sweep applied automatically to these samples: playbackRate [from, to] over seconds.
 const DOPPLER = { train_pass: [1.12, 0.88, 0.5] };
 
+// Until a new sound's file has loaded (or if it failed), play this older sample at rate x factor instead.
+const ALIAS = { buy: ['coin', 1.2], equip: ['ui_click', 1.3], mission: ['powerup', 1.35], levelup: ['newbest', 1.1],
+  box_open: ['powerup', 0.9], peak: ['train_horn', 1.15] };
+
+/** The buffer to play for `name` and its playback-rate factor, or null when there is nothing to play. */
+export function soundFor(bufs, name) {
+  if (bufs[name]) return { buf: bufs[name], factor: 1 };
+  const a = ALIAS[name];
+  return a && bufs[a[0]] ? { buf: bufs[a[0]], factor: a[1] } : null;
+}
+
+/** (L + R) / 2 of a stereo buffer as a new 1-channel buffer (`ctx` allocates it). The source is untouched. */
+export function downmixMono(ctx, buf) {
+  const n = buf.length, out = ctx.createBuffer(1, n, buf.sampleRate), d = out.getChannelData(0);
+  const chans = [...Array(buf.numberOfChannels).keys()].map((c) => buf.getChannelData(c)), k = chans.length;
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let c = 0; c < k; c++) s += chans[c][i];
+    d[i] = s / k;
+  }
+  return out;
+}
+
+/** Phones (coarse pointer, or 4 GB of memory or less) keep the soundtrack mono to save memory. */
+function isPhone() {
+  const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  return coarse || (globalThis.navigator?.deviceMemory || 8) <= 4;
+}
+
+/** Saves live under `tabbyrush.<key>` (the beta build: `tabbyrush-beta.<key>`, see channel.js). */
 const store = {
-  get(k, d) { try { const v = localStorage.getItem(`tabbyrush.${k}`); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem(`tabbyrush.${k}`, JSON.stringify(v)); } catch { /* storage unavailable */ } },
+  get(k, d) { try { const v = localStorage.getItem(PREFIX + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(PREFIX + k, JSON.stringify(v)); } catch { /* storage unavailable */ } },
 };
 export { store };
 
@@ -57,10 +89,16 @@ export class AudioFX {
     this.ctx = null;
     this.buf = {};
     this.tracks = {};
+    this.list = {};        // soundtrack files from music.json, by mode
+    this.loads = {};       // mode -> soundtrack decode (one per file)
+    this.settled = {};     // mode -> decode finished, with or without a buffer
+    this.phone = isPhone();
     this.muted = store.get('muted', false);
     this.coinStep = 0;
     this.lastCoin = 0;
-    this.mode = null;
+    this.mode = null;      // mode asked for
+    this.playing = null;   // mode whose music is running
+    this.bootTrack = null;
     this.trackSrc = null;
     this.vol = { music: 1, sfx: 1 };
   }
@@ -192,26 +230,39 @@ export class AudioFX {
     // music.json lists the optional soundtrack files, e.g. {"game": "bgm.mp3", "menu": "menu.mp3"}
     let list = {};
     try { const r = await fetch('assets/audio/music.json'); if (r.ok) list = await r.json(); } catch { /* no soundtrack */ }
-    this.tracksPending = !!(list.game || list.menu);
-    const keys = ['game', 'menu'].filter((k) => list[k]);
-    const prog = Object.fromEntries(keys.map((k) => [k, 0]));
-    const report = () => this.onProgress?.(keys.length ? keys.reduce((s, k) => s + prog[k], 0) / keys.length : 1);
-    report();
-    await Promise.all(keys.map(async (k) => {
-      const b = await this.fetchBuffer(`assets/audio/${list[k]}`, (p) => { prog[k] = p * 0.9; report(); });
-      try { if (b) this.tracks[k] = seamless(b); } catch { /* keep the synth fallback for this one */ }
-      prog[k] = 1;
-      report();
-    }));
+    this.list = list;
+    // Boot decodes one soundtrack (the menu's, or the game's if that is all there is); the other follows 1.5 s later
+    const order = ['menu', 'game'].filter((k) => list[k]);
+    this.bootTrack = order[0] || null;
+    this.tracksPending = order.length > 0;
+    if (!order.length) this.onProgress?.(1);
+    if (order[0]) await this.loadTrack(order[0]);
     this.tracksPending = false;
-    if (this.mode) { const m = this.mode; this.mode = null; this.music(m); }
+    this.apply();
+    if (order[1]) setTimeout(() => this.loadTrack(order[1]).then(() => this.apply()), 1500);
   }
+
+  /** Fetch and decode soundtrack `k` once. Phones keep a mono copy and drop the stereo buffer. */
+  loadTrack(k) {
+    this.loads[k] ??= (async () => {
+      const b = await this.fetchBuffer(`assets/audio/${this.list[k]}`, (p) => this.progress(k, p * 0.9));
+      try { if (b) this.tracks[k] = seamless(this.phone ? downmixMono(this.ctx, b) : b); } catch { /* keep the synth fallback for this one */ }
+      this.settled[k] = true;
+      this.progress(k, 1);
+    })();
+    return this.loads[k];
+  }
+
+  /** Download progress of the boot soundtrack feeds the loading bar. */
+  progress(k, p) { if (k === this.bootTrack) this.onProgress?.(p); }
 
   /** `pan` -1..1 places the sound in the stereo field (StereoPannerNode where supported). */
   play(name, { vol = 1, rate = 1, pan = 0 } = {}) {
-    if (!this.ctx || !this.buf[name]) return;
+    const s = soundFor(this.buf, name);
+    if (!this.ctx || !s) return;
     const src = this.ctx.createBufferSource();
-    src.buffer = this.buf[name];
+    src.buffer = s.buf;
+    rate *= s.factor;
     src.playbackRate.value = rate;
     const dop = DOPPLER[name];
     if (dop) {
@@ -242,8 +293,20 @@ export class AudioFX {
   music(mode) {
     if (!this.ctx || mode === this.mode) return;
     this.mode = mode;
-    // Real tracks are still decoding: wait for them instead of starting the synth (avoids two musics at once).
+    this.apply();
+  }
+
+  /** Play this.mode. While its soundtrack is still decoding, wait (the decode calls apply() again). */
+  apply() {
+    const mode = this.mode;
+    if (mode === this.playing) return;
+    // The menu track is still decoding at boot: wait for it instead of starting the synth (avoids two musics at once).
     if (this.tracksPending !== false && mode !== 'off') return;
+    if (mode !== 'off' && this.list[mode] && !this.tracks[mode] && !this.settled[mode]) {
+      this.loadTrack(mode).then(() => this.apply());
+      return;
+    }
+    this.playing = mode;
     if (this.trackSrc) {
       const { src, g } = this.trackSrc, t = this.ctx.currentTime;
       g.gain.cancelScheduledValues(t);
@@ -280,6 +343,12 @@ export class AudioFX {
   /** setRate() only reaches music files; the synth fallback gets its tempo nudged instead (112 -> 120 BPM). */
   setTempo(fast) {
     if (this.groove) this.groove.bpm = fast ? 120 : 112;
+  }
+
+  /** Decoded soundtrack memory in MB (debug): length x channels x 4 bytes (float32). */
+  memoryMB() {
+    const bytes = Object.values(this.tracks).reduce((s, t) => s + t.buffer.length * t.buffer.numberOfChannels * 4, 0);
+    return Math.round(bytes / 1048576 * 10) / 10;
   }
 
   setMuted(m) {

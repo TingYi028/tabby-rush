@@ -1,3 +1,4 @@
+import { BETA } from './channel.js';
 import { store } from './audio.js';
 import { settings } from './settings.js';
 import { dayKey } from './daily.js';
@@ -190,7 +191,7 @@ export function weekKey(d = new Date()) {
  * An unsent run is kept (best one per board, with the week it was earned in) and retried by flushPending().
  */
 export async function submitRemote({ score, dist, coins, secs, day = 0, wk = '' }) {
-  if (!(await remote.ready) || score <= 0) return null;
+  if (BETA || !(await remote.ready) || score <= 0) return null; // the beta build never posts to the world boards (channel.js)
   const run = { score, dist, coins, secs: Math.max(1, Math.round(secs)), day, wk: wk || weekKey() };
   // A normal run queued in an earlier week would count in THIS week's board (the server dates it at arrival). It adds
   // nothing to the all-time board unless it beats the known all-time best: then drop it. (An all-time record from last
@@ -331,7 +332,7 @@ async function pushName() {
   const name = playerName();
   let again = false;
   try {
-    if (!isDirty() || !(await remote.ready) || !onServer()) { setDirty(false); say('done'); return; }
+    if (BETA || !isDirty() || !(await remote.ready) || !onServer()) { setDirty(false); say('done'); return; } // beta: renames stay local
     if (noRenameRpc) { say('later'); return; }
     say('syncing');
     await rpc('tr_rename', { p_client: clientId(), p_name: name });

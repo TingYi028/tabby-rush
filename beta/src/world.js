@@ -5,7 +5,7 @@ import { images, makeTexture } from './assets.js';
 import {
   gravelCanvas, concreteCanvas, sidewalkCanvas, cloudCanvas, fallbackFacadeCanvas, makeCanvas,
 } from './textures.js';
-import { rng } from './textures.js';
+import { rng, isCoarsePointer } from './textures.js';
 import { makeLook, blendLook } from './themes.js';
 import { TunnelShell } from './tunnel.js';
 import { Rain } from './weather.js';
@@ -286,7 +286,7 @@ export class World {
     ground.receiveShadow = true;
     T.add(ground);
 
-    const bTex = makeTexture(gravel, { repeat: true });
+    const bTex = gTex.clone();   // shares the canvas Source: one GPU upload for both gravel textures, own repeat
     bTex.repeat.set(3.1 / 4.4, len / 4.4);
     const bedMat = new THREE.MeshStandardMaterial({
       map: bTex, color: 0x9a8a78, roughness: 1, polygonOffset: true, polygonOffsetFactor: -1,
@@ -396,9 +396,12 @@ varying float vViewZ;`)
           if (fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453) > keepS) discard;`);
     };
     const steelMesh = new THREE.Mesh(mergeGeometries(steel, false), smat);
-    steelMesh.castShadow = steelMesh.receiveShadow = true;
+    // Shadow pass (1024 map, redrawn every frame): the 528 m gantry / lamp merges are never culled, so lamps cast none and
+    // the steel only on desktop (its stripes across the track are a depth cue there)
+    steelMesh.receiveShadow = true;
+    steelMesh.castShadow = !isCoarsePointer();
     const lampMesh = new THREE.Mesh(mergeGeometries(lamps, false), vmat);
-    lampMesh.castShadow = lampMesh.receiveShadow = true;
+    lampMesh.receiveShadow = true;
     // Wires dissolve (screen-door dither) close to the camera so they never slice across the view.
     const wmat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.15 });
     wmat.onBeforeCompile = (sh) => {
@@ -440,8 +443,8 @@ varying float vViewZ;`)
       this.types.push({ im, aspect: src.width / src.height });
     }
     const unit = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+    // parapets, water towers and billboard frames cast no shadow (shadow pass cost; buildings, walls and trains carry it)
     this.parapets = new THREE.InstancedMesh(unit, new THREE.MeshStandardMaterial({ color: 0x6e5c4e, roughness: 0.9 }), 640);
-    this.parapets.castShadow = true;
 
     const tw = [];
     for (const x of [-0.9, 0.9]) for (const z of [-0.9, 0.9]) tw.push(pbox(0.18, 3, 0.18, x, 1.5, z, '#5a4636'));
@@ -452,7 +455,6 @@ varying float vViewZ;`)
     tw.push(paint(new THREE.ConeGeometry(1.55, 1.15, 18).translate(0, 6.27, 0), '#4c3b30'));
     this.towers = new THREE.InstancedMesh(mergeGeometries(tw, false),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }), 160);
-    this.towers.castShadow = true;
 
     const bw = 8.4, bh = bw * 320 / 1024;
     this.boardSize = [bw, bh];
@@ -463,7 +465,6 @@ varying float vViewZ;`)
     ];
     this.frames = new THREE.InstancedMesh(mergeGeometries(frame, false),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }), 40);
-    this.frames.castShadow = true;
     const boardGeo = new THREE.PlaneGeometry(bw, bh).translate(0, 3.0 + bh / 2, 0.04);
     this.boards = [0, 1].map((k) => new THREE.InstancedMesh(boardGeo,
       new THREE.MeshStandardMaterial({ map: makeTexture(billboardCanvas(k)), roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.12,
