@@ -1,18 +1,46 @@
-import { settings, canVibrate, vibrate } from './settings.js';
-import { playerName } from './leaderboard.js';
+import { settings, cleanName, canVibrate, vibrate } from './settings.js';
+import { playerName, onNameSync } from './leaderboard.js';
 
 const $ = (id) => document.getElementById(id);
 
-/** Save a typed leaderboard name; a refused one (abuse filter) flashes the field and says so in the placeholder. */
+/** Status line after a rename (leaderboard.js onNameSync): shown under the name field for a moment. */
+export const SYNC_TEXT = { syncing: '名稱同步中…', done: '名稱已更新', later: '名稱已更新・連線後同步到全球榜' };
+
+const REFUSED = '這個名字不能用，換一個吧';
+const showName = (input) => {
+  delete input.dataset.kept;
+  input.classList.remove('bad');
+  input.value = settings.get('name');
+  input.placeholder = playerName();
+};
+
+/**
+ * Save a typed leaderboard name. Every screen's name field comes through here; the board, the local rows and the world
+ * rows follow by themselves (leaderboard.js listens to the setting). A name the abuse filter refuses changes nothing:
+ * the saved name stays, the field flashes and the placeholder says so (an emptied field shows the saved name again
+ * afterwards). An emptied field the player cleared themselves goes back to the default name.
+ */
 export function applyName(input) {
   const typed = input.value.trim();
-  settings.set('name', input.value);
-  input.value = settings.get('name');
-  const refused = typed !== '' && settings.get('name') === '';
-  input.classList.toggle('bad', refused);
-  input.placeholder = refused ? '這個名字不能用，換一個吧' : playerName();
-  if (refused) setTimeout(() => { input.classList.remove('bad'); input.placeholder = playerName(); }, 2600);
-  return !refused;
+  // still showing a refusal (the saved name is kept): leaving the field empty is not "clear my name"
+  if (typed === '' && input.dataset.kept) { showName(input); return true; }
+  const refused = typed !== '' && cleanName(typed) === '';
+  if (!refused) {
+    settings.set('name', input.value);
+    showName(input);
+    return true;
+  }
+  input.dataset.kept = '1';
+  input.classList.add('bad');
+  input.value = '';
+  input.placeholder = REFUSED;
+  setTimeout(() => {
+    if (!input.dataset.kept) return;
+    input.classList.remove('bad');
+    input.placeholder = playerName();
+    if (document.activeElement !== input) showName(input); // (focused: they are about to type; blur restores it)
+  }, 2600);
+  return false;
 }
 
 /**
@@ -44,6 +72,18 @@ export class SettingsUI {
     }
     const name = $('set-name');
     name.addEventListener('change', () => applyName(name));
+    // 名稱同步中… / 名稱已更新 under the label (the hint line the other rows use)
+    const note = document.createElement('small');
+    note.setAttribute('role', 'status');
+    note.hidden = true;
+    name.parentElement.querySelector('.set-label')?.append(note);
+    let noteT = 0;
+    const say = (text) => { note.textContent = text; note.hidden = !text; };
+    onNameSync((state) => {
+      clearTimeout(noteT);
+      say(SYNC_TEXT[state] || '');
+      if (state !== 'syncing') noteT = setTimeout(() => say(''), 2600);
+    });
     name.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) name.blur(); });
     $('btn-settings')?.addEventListener('click', () => this.open('menu'));
     $('btn-settings-pause')?.addEventListener('click', () => this.open('pause'));

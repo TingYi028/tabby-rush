@@ -1,5 +1,6 @@
 import * as C from './config.js';
 import { LaneArrows, ARROW_SPACING } from './objects.js';
+import { PEAK, peakBonus, peakParams, peakWarn } from './peak.js';
 
 /*
  * Set pieces, mixed into Spawner.prototype (hooks: reset, update, smash, genSlot in spawner.js).
@@ -13,23 +14,27 @@ import { LaneArrows, ARROW_SPACING } from './objects.js';
  * three lanes are long parked trains with 5-8 m jumpable gaps, hurdles / signs standing on the roofs
  * (obstacle.y0 = TRAIN_TOP) and coin trails, entered by a ramp in the safe lane; then a clear lead-out
  * row and the normal wave resumes. The gate / breather / booking logic never runs inside it.
+ *
+ * Peak hour (尖峰時段, numbers in peak.js): after every 2nd rooftop segment, PEAK.rows denser rows (spawner.js genSlot,
+ * director.js tuneRow) and a speed factor for the hero (main.js, via peakSpeedAt). Anchored to the rooftop schedule, so
+ * the two never overlap; telegraphed by the 'peak' events (warn / start / clear) from updateSigns.
  */
 
 export const SWERVE = {
-  after: 900,      // m: no swerving trains before this
+  after: 650,      // m: no swerving trains before this
   chance: 0.45,    // share of eligible oncoming-train bookings that swerve
   at: 45,          // m between the front and the hero when the swerve starts...
-  minTtc: 0.95,    // ...or this many seconds of closing time, whichever is further
-  warn: 1.0,       // s of arrows + horn before the swerve starts
+  minTtc: 1.2,     // ...or this many seconds of closing time, whichever is further
+  warn: 1.2,       // s of arrows + horn before the swerve starts
   dur: 0.5,        // s to cross into the next lane
   lean: 0.06,      // rad of yaw at mid-swerve (the nose leads, the tail lags)
 };
 
 export const ROOF = {
-  first: 1000,     // m: the first rooftop segment starts about here
-  every: 1100,     // m between segment starts
+  first: 800,      // m: the first rooftop segment starts about here
+  every: 800,      // m between segment starts
   rows: 6,         // segment length in rows
-  quiet: 180,      // m before a segment where no new oncoming train is booked (so it can't delay the segment)
+  quiet: 140,      // m before a segment where no new oncoming train is booked (so it can't delay the segment)
   gapMin: 5,       // m between consecutive trains in a lane; a normal jump covers ~9 m even at base speed
   gapMax: 8,
   slack: 14,       // every lane's last train ends within this many metres of the segment end
@@ -48,7 +53,7 @@ const rowOf = (s) => Math.floor((s - C.START_GAP) / C.SLOT);
 // spawner.js wave: 8-row cycle with the gate on row 5 (WAVE / GATE_ROW there)
 const WAVE_LEN = 8, GATE_ROW = 5;
 /** Run speed at track position s (same curve as main.js), with a boost-strip surge on top as the worst case. */
-const planSpeed = (s) => C.SURGE_SPEED * (C.BASE_SPEED + (C.MAX_SPEED - C.BASE_SPEED) * (1 - Math.exp(-s / C.SPEED_RAMP)));
+const planSpeed = (s) => C.SURGE_SPEED * C.speedAt(s);
 
 /**
  * Where a roof barrier of `kind` may stand on train `tr` (gap before / after it in metres, 0 = none) at speed v.
@@ -121,6 +126,9 @@ export const setPieces = {
     this.nextRoof = ROOF.first;
     this.roofSeq = 0;
     this.roofSpans = [];    // {from, to, announced} track spans of generated segments
+    this.nextPeak = Infinity; // track position where the next peak hour opens (set at a rooftop lead-out)
+    this.peakSpans = [];    // {idx, from, to, warnAt, warned, started, cleared} generated peak hours still near the hero
+    this.peakCount = 0;     // peak hours generated this run (debug)
   },
 
   /** Lane `l` is kept clear for a booked oncoming train (its own lane, or the lane it will swerve into). */
@@ -132,6 +140,36 @@ export const setPieces = {
   inRoof(s) {
     if (this.roof && s >= this.roof.start - C.SLOT) return true;
     return this.roofSpans.some((r) => s >= r.from - C.SLOT && s < r.to + C.SLOT);
+  },
+
+  /** The generated peak hour covering track position `s`, or null. Per row and per frame: no allocation. */
+  peakSpanAt(s) {
+    for (let i = 0; i < this.peakSpans.length; i++) if (s >= this.peakSpans[i].from && s < this.peakSpans[i].to) return this.peakSpans[i];
+    return null;
+  },
+
+  /** Is track position `s` inside a generated peak hour? */
+  peakAt(s) {
+    return this.peakSpanAt(s) !== null;
+  },
+
+  /** The hero's run-speed factor at `s` (main.js, per frame): 1.08 in the first peak hour, 1.12 in later ones, 1 outside. */
+  peakSpeedAt(s) {
+    const p = this.peakSpanAt(s);
+    return p ? peakParams(p).speed : 1;
+  },
+
+  /** No jetpack from PEAK.jetMargin before a peak hour (pending or generated) to its end: it would fly over all of it. */
+  peakNoJet(s) {
+    if (s >= this.nextPeak - PEAK.jetMargin) return true;
+    for (let i = 0; i < this.peakSpans.length; i++) if (s >= this.peakSpans[i].from - PEAK.jetMargin && s < this.peakSpans[i].to) return true;
+    return false;
+  },
+
+  /** genSlot: the row at s0 (>= nextPeak, not a rooftop row) opens the scheduled peak hour. */
+  openPeak(s0) {
+    this.peakSpans.push({ idx: this.peakCount++, from: s0, to: s0 + PEAK.rows * C.SLOT, warnAt: s0 - peakWarn(s0), warned: false, started: false, cleared: false });
+    this.nextPeak = Infinity;
   },
 
   trackPace(dt, dist) {
@@ -212,7 +250,7 @@ export const setPieces = {
     this.arrowPool.push(obj);
   },
 
-  /** End of Spawner.update: retire arrows, announce rooftop segments. */
+  /** End of Spawner.update: retire arrows, announce rooftop segments and peak hours. */
   updateSigns(dt, dist, events) {
     for (let i = this.signs.length - 1; i >= 0; i--) {
       const sg = this.signs[i];
@@ -226,6 +264,13 @@ export const setPieces = {
       if (!r.announced && dist >= r.from - 70) { r.announced = true; events.push({ type: 'setpiece', name: 'roof' }); }
       if (r.to + C.SLOT < dist - 20) this.roofSpans.splice(i, 1);
     }
+    for (let i = this.peakSpans.length - 1; i >= 0; i--) {
+      const p = this.peakSpans[i];
+      if (!p.warned && dist >= p.warnAt) { p.warned = true; events.push({ type: 'peak', phase: 'warn', idx: p.idx }); }
+      if (!p.started && dist >= p.from) { p.started = true; events.push({ type: 'peak', phase: 'start', idx: p.idx }); }
+      if (!p.cleared && dist >= p.to) { p.cleared = true; events.push({ type: 'peak', phase: 'clear', idx: p.idx, bonus: peakBonus(p.idx) }); }
+      if (p.to + 40 < dist) this.peakSpans.splice(i, 1);
+    }
   },
 
   /* ---------- rooftop parkour ---------- */
@@ -237,12 +282,12 @@ export const setPieces = {
    */
   setPieceRow(k, s0) {
     if (this.roof) { this.roofRow(this.roof, k, s0); return true; }
-    if (s0 < this.nextRoof - C.SLOT || this.reserve) return false;
+    if (s0 < this.nextRoof - C.SLOT || this.reserve || this.peakAt(s0)) return false; // never inside a peak hour
     const blocked = [0, 1, 2].map((L) => this.busy[L] > k);
     this.blocked[k] = blocked;
     if (blocked.some(Boolean)) {
       // approach: open track (trains already on it run out), coins in the safe lane
-      for (let s = s0 + 3; s <= s0 + 17; s += 2) this.coins.add(C.laneX(this.safe), 0.9, s);
+      this.groundCoins(this.safe, k, s0 + 3, s0 + 17);
       return true;
     }
     this.planRoof(k, s0);
@@ -291,7 +336,7 @@ export const setPieces = {
     }
     // coin trails: always up the entrance ramp (starting in the lead-in row), sometimes along the other lanes
     for (let L = 0; L < 3; L++) {
-      if (L === S) roofCoins(lanes[L], start - 14, L, coins);
+      if (L === S) roofCoins(lanes[L], this.coinFrom(L, k, start - 14), L, coins); // (not through a combo hurdle left over from row k - 1)
       else if (Math.random() < ROOF.extraTrail) roofCoins(lanes[L], lanes[L].trains[0].s + 1.5, L, coins);
     }
     items.sort((a, b) => a.s - b.s);
@@ -318,6 +363,7 @@ export const setPieces = {
     if ((k + 1) % WAVE_LEN === GATE_ROW) return;
     this.roof = null;
     this.nextRoof = P.start + ROOF.every;
+    if (P.id % PEAK.roofEvery === 1) this.nextPeak = s0 + PEAK.afterRoof * C.SLOT; // the 1st, 3rd, 5th ... segment
   },
 
   flushRoof(P, upto) {

@@ -1,3 +1,104 @@
+// Per-place soundtrack helpers (pure, no audio context; AudioFX in audio.js plays what they choose) and the procedural
+// funk/hip-hop groove (A minor, 112 BPM) that plays when no music file is available.
+
+/*
+ * Track keys: 'menu' / 'game' = today's menu.mp3 / bgm.mp3 (music.json); `menu:<place>` / `run:<place>` = the place's lobby /
+ * run track from music_places.json. A place without a manifest entry (the lighting-only city places, places still being
+ * composed, a bad entry) simply has no key of its own and falls back to 'menu' / 'game', then to the Groove synth.
+ */
+
+/** Cross-fade seconds: place -> place in a run, lobby change, lobby -> run handover (out / in), stopping, a fresh start. */
+export const FADE = { place: 2.5, lobby: 1.5, out: 1.2, in: 0.8, off: 0.5 };
+/** Gain of a track into the music bus; bgm.mp3 standing in for a missing lobby track is quieter. */
+export const GAIN = { track: 0.85, lobbyFallback: 0.45 };
+/** Seconds to wait for the place's own track with nothing playing before a fallback (or the synth) takes over. */
+export const GRACE = 2.5;
+
+const ID_RE = /^[a-z0-9_]{1,32}$/;
+const FILE_RE = /^[A-Za-z0-9_-]{1,64}\.mp3$/;
+const KEY_RE = /^(run|menu):([a-z0-9_]{1,32})$/;
+
+export const isPlaceId = (id) => typeof id === 'string' && ID_RE.test(id);
+
+function parseEntry(e) {
+  if (!e || typeof e !== 'object' || typeof e.file !== 'string' || !FILE_RE.test(e.file)) return null;
+  const l = e.loop;
+  if (!Array.isArray(l) || l.length !== 2 || !l.every((v) => typeof v === 'number' && Number.isFinite(v))) return null;
+  if (l[0] < 0 || l[1] - l[0] < 4 || l[1] > 1200) return null;
+  return { file: e.file, bpm: Number.isFinite(e.bpm) ? e.bpm : null, loop: [l[0], l[1]] };
+}
+
+/**
+ * music_places.json -> { <placeId>: { run?, menu? } } with each entry {file, bpm, loop: [start, end]} (seconds). Anything
+ * that is not a well-formed entry (bad id, file name with a path, missing / reversed / absurd loop points) is left out, so
+ * that place falls back; a missing or garbage manifest gives an empty one. The result has no prototype.
+ */
+export function parseManifest(json) {
+  const out = Object.create(null);
+  const places = json && typeof json === 'object' ? json.places : null;
+  if (!places || typeof places !== 'object' || Array.isArray(places)) return out;
+  for (const id of Object.keys(places)) {
+    if (!ID_RE.test(id) || !places[id] || typeof places[id] !== 'object') continue;
+    const run = parseEntry(places[id].run), menu = parseEntry(places[id].menu);
+    if (run || menu) out[id] = { ...(run && { run }), ...(menu && { menu }) };
+  }
+  return out;
+}
+
+/** Track keys for a mode ('game' = a run, 'menu' = the lobby) at place `id`, best first; every key has a file to load. */
+export function trackChain(manifest, list, mode, id) {
+  const e = isPlaceId(id) && manifest ? manifest[id] : null;
+  const has = (k) => !!list && typeof list[k] === 'string' && FILE_RE.test(list[k]);
+  if (mode === 'game') return [e && e.run ? `run:${id}` : null, has('game') ? 'game' : null].filter(Boolean);
+  if (mode === 'menu') return [e && e.menu ? `menu:${id}` : null, has('menu') ? 'menu' : null, has('game') ? 'game' : null].filter(Boolean);
+  return [];
+}
+
+/** {file, loop} of a track key (loop null = a legacy file that audio.js makes loop seamlessly), or null if unknown. */
+export function trackSpec(manifest, list, key) {
+  if (key === 'menu' || key === 'game') return list && typeof list[key] === 'string' && FILE_RE.test(list[key]) ? { file: list[key], loop: null } : null;
+  const m = KEY_RE.exec(key);
+  const e = m && manifest && manifest[m[2]] ? manifest[m[2]][m[1]] : null;
+  return e ? { file: e.file, loop: e.loop } : null;
+}
+
+/** 'menu' for the lobby tracks (menu.mp3 and the place menus), 'game' for run tracks (bgm.mp3, run:*). */
+export const trackKind = (key) => (key === 'menu' || (key || '').startsWith('menu:') ? 'menu' : 'game');
+
+/** [fade-out, fade-in] seconds when the music goes from track `from` (null = nothing / the synth) to track `to`. */
+export function fadeTimes(from, to) {
+  if (!from) return [0, FADE.in];
+  const a = trackKind(from), b = trackKind(to);
+  if (a === 'menu' && b === 'game') return [FADE.out, FADE.in];   // 開始衝刺 handover
+  if (a === b) return a === 'menu' ? [FADE.lobby, FADE.lobby] : [FADE.place, FADE.place];
+  return [FADE.off, FADE.in];                                      // run -> lobby (quit to menu)
+}
+
+/** Equal-power fade as [secondsFromStart, gain] points (linear ramps between them): in = peak*sin, out = peak*cos. */
+export function fadePoints(dur, peak, dir, steps = 16) {
+  const pts = [];
+  for (let i = 1; i <= steps; i++) {
+    const p = i / steps, a = p * Math.PI / 2;
+    pts.push([dur * p, i === steps && dir === 'out' ? 0 : peak * (dir === 'in' ? Math.sin(a) : Math.cos(a))]);
+  }
+  return pts;
+}
+
+/** Schedule an equal-power fade on an AudioParam from time `t`: in from 0 up to `peak`, out from `peak` down to 0. */
+export function fadeParam(param, t, dur, peak, dir) {
+  param.cancelScheduledValues(t);
+  param.setValueAtTime(dir === 'in' ? 0 : peak, t);
+  for (const [dt, v] of fadePoints(dur, peak, dir)) param.linearRampToValueAtTime(v, t + dt);
+}
+
+/** Keys to drop so that at most `cap` remain, least recently used first, never one in `keep` (a Set). `used`: key -> counter. */
+export function lruVictims(held, used, keep, cap) {
+  const order = held.filter((k) => !keep.has(k)).sort((a, b) => (used[a] || 0) - (used[b] || 0));
+  const out = [];
+  for (let n = held.length; n > cap && out.length < order.length; n--) out.push(order[out.length]);
+  return out;
+}
+
 // Procedural funk/hip-hop groove (A minor, 112 BPM). Used when no music file is present.
 
 const _ = null;

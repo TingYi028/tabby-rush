@@ -1,0 +1,153 @@
+/*
+ * 許願池 (src/wish-ui.js): the wish card, the menu button's dot. Same sticker look as the board and shop cards (ink outline,
+ * cream card, orange pills); every class is wish-* so nothing else is touched. Uses the page's custom properties
+ * (--ink, --sun, --cream, --font-cjk ...). Layouts: tall = form on top, tabs + list under it; short and narrow (phone in
+ * portrait) = one thing at a time (wish-ui.js hides the form or the list and sets data-compact); short and wide (phone in
+ * landscape, laptop) = form left, tabs + list right.
+ */
+
+#wish { overflow-y: auto; align-items: safe center; }
+.wish-card { box-sizing: border-box; width: min(520px, 100%); max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  display: flex; flex-direction: column; align-items: stretch; gap: 10px; padding: 18px 16px 20px; text-align: left; }
+.wish-card > * { flex: none; min-width: 0; }
+.wish-card > h2 { align-self: center; text-align: center; font-size: clamp(30px, 6vw, 38px); }
+.wish-card > .wish-body { flex: 1 1 auto; }
+.wish-card > .card-actions { align-self: center; }
+.wish-card .wish-rules { margin: -2px 0 0; font: 700 13px/1.45 var(--font-cjk); color: #7a4a2a; text-align: center; text-wrap: pretty; }
+.wish-toggle { align-self: center; }
+
+/* the form */
+.wish-form { display: grid; gap: 8px; }
+.wish-form textarea { box-sizing: border-box; width: 100%; min-height: 78px; resize: none; padding: 10px 12px; border: 3px solid var(--ink);
+  border-radius: 14px; background: var(--white); color: var(--ink); font: 700 16px/1.4 var(--font-cjk);
+  user-select: text; -webkit-user-select: text; }
+.wish-form textarea::placeholder { color: #a98366; }
+.wish-form textarea:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+.wish-form textarea:disabled { opacity: 0.6; }
+.wish-form textarea.bad { border-color: #e8361f; background: #ffe6df; animation: wish-nope 0.35s ease-in-out; }
+.wish-cats { display: flex; flex-wrap: wrap; gap: 6px; }
+.wish-catbtn { min-height: 38px; padding: 4px 13px; border: 3px solid var(--ink); border-radius: 999px; background: #f1e3c4;
+  box-shadow: 0 3px 0 var(--ink); color: var(--ink); font: 900 14px/1 var(--font-cjk); cursor: pointer; touch-action: manipulation; }
+.wish-catbtn[aria-checked="true"] { background: linear-gradient(#ffdc55, #ff9e22); color: var(--white); text-shadow: var(--ol-sm); }
+.wish-catbtn:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.wish-catbtn:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+.wish-send { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.wish-send .btn:disabled { filter: grayscale(0.85); opacity: 0.7; cursor: not-allowed; }
+.wish-send .btn:disabled:hover, .wish-send .btn:disabled:active { transform: none; }
+.wish-quota { flex: 1 1 130px; min-width: 0; font: 700 12px/1.3 var(--font-cjk); color: #7a4a2a; }
+.wish-count { margin-left: auto; font: 900 13px/1 var(--font-cjk); color: #8a5a3a; font-variant-numeric: tabular-nums; }
+.wish-count.near { color: #b5530a; }
+.wish-count.full { color: #b5402a; }
+.wish-card .wish-msg { margin: 0; min-height: 1.4em; font: 900 13px/1.4 var(--font-cjk); color: #7a4a2a; text-wrap: pretty; }
+.wish-card .wish-msg.err { color: #b5402a; }
+.wish-card .wish-msg.good { color: #1d8a4e; }
+.wish-card .wish-msg:empty { min-height: 0; }
+
+/* tabs */
+.wish-tabs { display: flex; gap: 6px; }
+.wish-tabs button { flex: 1; min-height: 42px; padding: 6px 4px; border: 3px solid var(--ink); border-radius: 14px; background: #f1e3c4;
+  box-shadow: 0 3px 0 var(--ink); color: var(--ink); font: 900 15px/1 var(--font-cjk); cursor: pointer; }
+.wish-tabs button[aria-selected="true"] { background: linear-gradient(#ffdc55, #ff9e22); color: var(--white); text-shadow: var(--ol-sm); }
+.wish-tabs button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+
+/* the list */
+.wish-body { min-height: 0; display: grid; align-content: start; overflow-y: auto; overscroll-behavior: contain; }
+.wish-body:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; border-radius: 10px; }
+.card .wish-status { margin: 0; padding: 18px 8px; color: #8a5a3a; font: 900 15px/1.5 var(--font-cjk); text-align: center; text-wrap: pretty; }
+.wish-retry { margin-top: 10px; }
+.wish-list { list-style: none; margin: 0; padding: 2px 4px 6px; display: grid; gap: 8px; align-content: start; }
+.wish-item { --rc: #8fd18a; display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 10px; padding: 8px 10px 8px 12px;
+  background: var(--white); border: 3px solid var(--ink); border-radius: 14px; box-shadow: 0 3px 0 var(--ink), inset 5px 0 0 var(--rc); }
+.wish-item.st-open { --rc: #3cc7b2; }
+.wish-item.st-planned { --rc: #a46bff; }
+.wish-item.st-doing { --rc: #ff9e22; }
+.wish-item.st-done { --rc: #4cc23a; }
+.wish-item.st-declined { --rc: #d9a99f; }
+.wish-item.st-pending { --rc: #cdbd9a; }
+.wish-item.mine { background: #fff7de; }
+.wish-item.st-declined .wish-text { opacity: 0.78; }
+.wish-side { display: grid; justify-items: center; width: 50px; }
+.wish-up { display: grid; justify-items: center; gap: 1px; width: 50px; min-height: 54px; box-sizing: border-box; padding: 5px 0 3px;
+  border: 3px solid var(--ink); border-radius: 14px; background: var(--cream); box-shadow: 0 3px 0 var(--ink); color: var(--ink);
+  cursor: pointer; touch-action: manipulation; }
+.wish-up svg { width: 20px; height: 20px; fill: var(--sun); stroke: var(--ink); stroke-width: 1.8; stroke-linejoin: round; }
+.wish-up b, .wish-tally b { font: 18px/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.wish-up[aria-pressed="true"] { background: linear-gradient(#ffdc55, #ff9e22); color: var(--white); text-shadow: var(--ol-sm); }
+.wish-up[aria-pressed="true"] svg { fill: var(--white); }
+.wish-up:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.wish-up:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; box-shadow: 0 0 0 6px var(--sun); }
+.wish-tally { display: grid; justify-items: center; gap: 2px; width: 50px; padding: 4px 0 3px; border: 2px dashed #b99a76; border-radius: 12px; color: #7a4a2a; }
+.wish-tally span { font: 900 11px/1 var(--font-cjk); }
+.wish-main { display: grid; gap: 5px; min-width: 0; }
+.card .wish-text { margin: 0; font: 900 15px/1.4 var(--font-cjk); overflow-wrap: anywhere; text-wrap: pretty; }
+.wish-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.wish-badge, .wish-cat, .wish-own { display: inline-block; padding: 3px 9px 2px; border: 2px solid var(--ink); border-radius: 999px;
+  font: 900 12px/1.2 var(--font-cjk); white-space: nowrap; }
+.wish-badge { background: #ece2cb; }
+.wish-badge.st-open { background: #d6f6ef; color: #0d6b5e; }
+.wish-badge.st-planned { background: #e6d6ff; color: #5128b8; }
+.wish-badge.st-doing { background: #ffd9a8; color: #a14a05; }
+.wish-badge.st-done { background: #cdf3cf; color: #17692c; }
+.wish-badge.st-declined { background: #ffd9d2; color: #a3351f; }
+.wish-cat { background: var(--white); color: #7a4a2a; border-color: #b99a76; }
+.wish-own { background: var(--sun); border-color: var(--ink); }
+.card .wish-note { margin: 0; padding: 6px 9px; border: 2px dashed #b99a76; border-radius: 10px; background: #fff8e6;
+  font: 700 13px/1.45 var(--font-cjk); overflow-wrap: anywhere; text-wrap: pretty; }
+.wish-note b { margin-right: 2px; color: var(--tangerine); font-weight: 900; }
+.card .wish-note.soft { border-style: solid; border-color: #e3d4b3; background: none; color: #8a5a3a; font-size: 12px; }
+
+/* the menu button (index.html): a dot when the developer has answered one of your wishes */
+.wish-entry { position: relative; }
+.wish-dot { position: absolute; top: -6px; right: -4px; width: 14px; height: 14px; box-sizing: border-box; border: 2px solid var(--ink);
+  border-radius: 50%; background: #ff3d5a; }
+
+@keyframes wish-nope { 0%, 100% { transform: none; } 25% { transform: translateX(-6px); } 75% { transform: translateX(6px); } }
+
+/* phones in portrait and other short, narrow screens: wish-ui.js shows the form or the list, never both */
+@media (max-height: 740px) {
+  .wish-card { gap: 8px; padding: 14px 14px 16px; }
+  .wish-card > h2 { font-size: 30px; }
+  .wish-form textarea { min-height: 70px; }
+  .wish-tabs button { min-height: 38px; }
+}
+
+/* short and wide (landscape phones, laptops): the form on the left, tabs + list on the right */
+@media (max-height: 740px) and (min-width: 600px) and (min-aspect-ratio: 1001/1000) {
+  .wish-card { width: min(820px, 100%); height: calc(100vh - 40px);
+    height: calc(100dvh - 40px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    display: grid; grid-template-columns: minmax(250px, 320px) minmax(0, 1fr); grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+    column-gap: 16px; row-gap: 8px; align-items: start; overflow-y: auto; overscroll-behavior: contain; }
+  .wish-card > * { grid-column: 1; }
+  .wish-card > h2 { grid-row: 1; justify-self: center; }
+  .wish-card > .wish-rules { grid-row: 2; }
+  .wish-card > .wish-form { grid-row: 3; }
+  .wish-card > .wish-msg { grid-row: 4; }
+  .wish-card > .card-actions { grid-row: 6; align-self: end; justify-self: center; }
+  .wish-card > .wish-tabs { grid-column: 2; grid-row: 1; }
+  .wish-card > .wish-body { grid-column: 2; grid-row: 2 / 7; align-self: stretch; }
+}
+@media (max-height: 520px) {
+  .wish-card { row-gap: 6px; padding: 10px 14px 12px; }
+  .wish-card > h2 { font-size: 26px; }
+  .wish-card .wish-rules { font-size: 12px; line-height: 1.35; }
+  .wish-form { gap: 6px; }
+  .wish-form textarea { min-height: 54px; padding: 6px 10px; }
+  .wish-catbtn { min-height: 32px; padding: 3px 10px; font-size: 13px; }
+  .wish-tabs button { min-height: 34px; font-size: 14px; }
+  .wish-quota { display: none; }
+  .wish-card .btn-alt { font-size: 17px; padding: 8px 22px 10px; }
+  .wish-card .btn-small { font-size: 17px; padding: 8px 18px 10px; }
+}
+@media (max-height: 400px) {
+  .wish-card > h2 { display: none; } /* the tabs say what this is; the dialog keeps its name for screen readers */
+}
+@media (max-width: 380px) {
+  .wish-item { gap: 8px; padding-inline: 8px 8px; }
+  .wish-side, .wish-up, .wish-tally { width: 44px; }
+  .wish-catbtn { padding-inline: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wish-form textarea.bad { animation: none; }
+}
+body.fx-calm .wish-form textarea.bad { animation: none; }

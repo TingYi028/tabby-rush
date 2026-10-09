@@ -30,6 +30,7 @@ export const OVERHEAD_TOP = 3.45;    // feet above this clear the beam
 
 // Player
 export const GRAVITY = 64;
+export const FALL_GRAVITY = 1.12;  // gravity multiplier while falling (snappier landings)
 export const JUMP_H = 2.15;
 export const JUMP_H_SNEAKERS = 4.7;
 export const STAND_H = 1.75;
@@ -37,10 +38,14 @@ export const ROLL_H = 0.85;
 export const STEP_UP = 0.6;
 
 // Pace
-export const BASE_SPEED = 18.5;
-export const MAX_SPEED = 37;
-export const SPEED_RAMP = 1900;     // distance over which speed approaches MAX_SPEED
-export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14, jetpack: 7.5 };
+export const BASE_SPEED = 21;
+export const MAX_SPEED = 42;
+export const SPEED_RAMP = 1500;     // distance over which speed approaches MAX_SPEED
+/** Run speed (m/s) at track distance s, before frenzy / surge multipliers: ~29 m/s after 30 s, ~37 after 90 s. */
+export const LATE = { from: 3000, rate: 1, cap: 6 };   // m, m/s per km, m/s: +1 m/s per km after 3 km, 48 m/s from 9 km
+export const speedAt = (s) => BASE_SPEED + (MAX_SPEED - BASE_SPEED) * (1 - Math.exp(-s / SPEED_RAMP))
+  + Math.min(LATE.cap, Math.max(0, s - LATE.from) * LATE.rate / 1000);
+export const POWER_TIME = { magnet: 10, sneakers: 10, x2: 14, jetpack: 5 };
 
 // Thrills
 export const JET_Y = 10.4;          // jetpack cruise height (above the gantries)
@@ -49,7 +54,7 @@ export const BOOST_LEN = 5.5;       // speed-boost strip length on the sleepers
 export const SURGE_TIME = 3;        // speed surge after running over a boost strip
 export const SURGE_SPEED = 1.25;
 export const SPEED_MULT_CAP = 1.5;  // frenzy x surge never exceeds this
-export const FEVER_TIME = 6.5;      // TABBY RUSH frenzy duration
+export const FEVER_TIME = 5.5;      // TABBY RUSH frenzy duration
 export const FEVER_SPEED = 1.3;
 
 export const rand = (a, b) => a + Math.random() * (b - a);

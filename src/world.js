@@ -1,14 +1,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as C from './config.js';
-import { images, makeTexture } from './assets.js';
+import { images, makeTexture, loadSet } from './assets.js';
 import {
   gravelCanvas, concreteCanvas, sidewalkCanvas, cloudCanvas, fallbackFacadeCanvas, makeCanvas,
 } from './textures.js';
-import { rng } from './textures.js';
-import { makeLook, blendLook } from './themes.js';
+import { rng, isCoarsePointer } from './textures.js';
+import { makeLook, blendLook, PLACES } from './themes.js';
+import { ZoneSets, SHARED, texMB, placeSet, swapActive, parseAtlas, gridDefs } from './zoneload.js';
 import { TunnelShell } from './tunnel.js';
-import { Rain } from './weather.js';
+import { Weather } from './weather.js';
 
 export const FOG_COLOR = 0xf3d9b1;
 const BULB = new THREE.Color(1.7, 1.5, 1.1);
@@ -56,6 +57,19 @@ function windowGlowCanvas(src, seed) {
 }
 
 const FACADE_TINT = ['#b4523d', '#e6d2a6', '#3f8e8a', '#c2643b'];
+const WHITE = new THREE.Color(1, 1, 1);
+// place art sets (assets/zones/<set>/): props.webp and decals.webp are atlases whose pictures are the pixel rects of atlas.json
+// (a set without a usable atlas.json is read as a 2 x 2 grid, gridDefs), picked per instance / per decal
+const PROPS_PER_SIDE = 2;                              // track-side props per segment and side, at most
+const PROP_MAX = 4 * PROPS_PER_SIDE * C.SEG_COUNT;
+const PROP_MAX_W = 3.6;                                // widest prop (m): the pavement between the wall and the buildings is 3.4 m     // capacity of the props InstancedMesh
+
+/** Skyline cylinder: tile count and height for a skyline image of this width / height. */
+function skylineDims(aspect) {
+  const R = 640, arc = Math.PI * 1.3;
+  const tiles = Math.max(2, Math.round((R * arc) / (R * 0.34 * aspect)));
+  return { R, arc, tiles, H: (R * arc) / (tiles * aspect) };
+}
 const BX = C.WALL_X + 3.4; // inner face of the first row of buildings
 
 function paint(geo, color) {
@@ -116,16 +130,179 @@ export class World {
   constructor(scene, root) {
     this.scene = scene;
     this.root = root;
+    this.renderer = null;   // setRenderer(): lets the art-set uploads happen one per frame instead of on first sight
     scene.fog = new THREE.Fog(FOG_COLOR, 75, 300);
     scene.background = new THREE.Color(FOG_COLOR);
+    // a 1 px transparent map stands in wherever an art set's map is not there yet, so swapping maps never recompiles a shader
+    this.blank = new THREE.DataTexture(new Uint8Array([255, 255, 255, 0]), 1, 1);
+    this.blank.colorSpace = THREE.SRGBColorSpace;
+    this.blank.needsUpdate = true;
+    const skyImg = images.skyline_tile;
+    this.skyDims = skyImg ? skylineDims(skyImg.width / skyImg.height) : null;
+    this.cityGlow = [];     // the shared set's window-glow canvases (kept: rebuilding that set must not repeat the flood fill)
+    this.nTypes = 4;
+    this.shown = '';        // art set on screen
+    this.visual = SHARED;   // art set the place cross-fade asks for (falls back to the shared one until it is ready)
+    this.nextPlace = -1;
+    this.wantKey = -1;
+    this.zones = new ZoneSets({
+      load: (name) => (name === SHARED ? Promise.resolve({}) : loadSet(name, PLACES.some((p) => placeSet(p) === name && !!p.skin))),
+      build: (name, files) => this.buildSet(name, files),
+      free: (name, res) => this.freeSet(res),
+      now: () => performance.now(),
+    });
+    const city = this.buildSet(SHARED, {});
+    for (const job of city.jobs) job();
     this.buildLights();
-    this.buildSky();
+    this.buildSky(city.res);
     this.buildTrack();
     this.buildCity();
     this.buildAmbience();
+    this.bindSet(city.res);
+    this.zones.adopt(SHARED, city.res, city.mb);
+    this.wantSets();
     this.segments = [];
-    for (let i = 0; i < C.SEG_COUNT; i++) this.segments.push({ s: 0, buildings: [], decals: [] });
+    for (let i = 0; i < C.SEG_COUNT; i++) this.segments.push({ s: 0, buildings: [], decals: [], props: [] });
     this.reset(0);
+  }
+
+  /* ---------- place art sets (zoneload.js decides what is resident; this file builds, shows and frees the textures) ---------- */
+
+  setRenderer(renderer) { this.renderer = renderer; }
+
+  /**
+   * The textures of art set `name` as `jobs` (one texture each, run one per frame by ZoneSets) that fill `res`, and their GPU
+   * cost `mb`. The shared set comes from the boot images; a place set needs at least one facade and a skyline (else null: the
+   * place falls back to the shared set), props / decals / skin are optional.
+   */
+  buildSet(name, files) {
+    const city = name === SHARED;
+    const res = { name, aspect: [], facade: [], glow: [], skyline: null, props: null, propDefs: [], decals: [], skin: null, skinUV: null, all: [] };
+    const jobs = [];
+    let mb = 0;
+    const tex = (src, opt) => { const t = makeTexture(src, opt); res.all.push(t); return t; };
+    const up = (t) => { if (this.renderer) this.renderer.initTexture(t); return t; };   // upload now, not at first sight
+    const facades = city ? [1, 2, 3, 4].map((i) => images[`facade_0${i}`] || fallbackFacadeCanvas(i - 1))
+      : [files.facade_1, files.facade_2, files.facade_3].filter(Boolean);
+    const skyImg = city ? images.skyline_tile : files.skyline;
+    if (!facades.length || (!city && !skyImg)) return null;
+    facades.forEach((src, i) => {
+      mb += texMB(src.width, src.height) + texMB(160, 384);
+      jobs.push(() => { res.aspect.push(src.width / src.height); res.facade.push(up(tex(src))); });
+      jobs.push(() => {
+        const glow = city ? (this.cityGlow[i] || (this.cityGlow[i] = windowGlowCanvas(src, 71 * (i + 1)))) : windowGlowCanvas(src, 71 * (i + 1));
+        res.glow.push(up(tex(glow)));
+      });
+    });
+    if (skyImg) {
+      mb += texMB(skyImg.width, skyImg.height);
+      jobs.push(() => {
+        const t = tex(skyImg, { repeat: true });
+        t.wrapT = THREE.ClampToEdgeWrapping;
+        t.repeat.set(-(this.skyDims ? this.skyDims.tiles : 1), 1);
+        res.skyline = up(t);
+      });
+    }
+    if (city) {
+      for (let i = 1; i <= 6; i++) {
+        const img = images[`graffiti${i}`];
+        if (!img) continue;
+        mb += texMB(img.width, img.height);
+        jobs.push(() => { res.decals.push({ aspect: img.width / img.height, tex: up(tex(img)) }); });
+      }
+      return { res, mb, jobs };
+    }
+    const atlas = parseAtlas(files.atlas, { props: files.props, decals: files.decals, skin: files.skin });
+    if (files.decals) {
+      mb += texMB(files.decals.width, files.decals.height);
+      jobs.push(() => {
+        const sheet = tex(files.decals);
+        // one texture per decal rect, all sharing the sheet's image: cloned BEFORE the upload (a clone made afterwards uploads again)
+        for (const d of atlas.decals || gridDefs(2)) {
+          const t = sheet.clone();
+          res.all.push(t);
+          t.repeat.set(d.du, d.dv);
+          t.offset.set(d.u, d.v);
+          res.decals.push({ aspect: d.aspect, tex: t });
+        }
+        up(sheet);
+      });
+    }
+    if (files.props) {
+      mb += texMB(files.props.width, files.props.height);
+      res.propDefs = atlas.props || gridDefs(2);
+      jobs.push(() => { res.props = up(tex(files.props)); });
+    }
+    if (files.skin) {
+      mb += texMB(files.skin.width, files.skin.height);
+      res.skinUV = atlas.skin;
+      jobs.push(() => { res.skin = up(tex(files.skin)); });
+    }
+    return { res, mb, jobs };
+  }
+
+  freeSet(res) {
+    for (const t of res.all) t.dispose();
+    res.all.length = 0;
+  }
+
+  /** Point the shared materials at the textures of `res` (facades, skyline, decals, props, skin); nothing is recompiled. */
+  bindSet(res) {
+    const n = res.facade.length;
+    this.nTypes = n;
+    this.types.forEach((t, i) => {
+      const m = t.im.material[0];
+      m.map = res.facade[i % n];
+      m.emissiveMap = res.glow[i % n];
+      t.aspect = res.aspect[i % n];
+    });
+    if (this.skylineMat && res.skyline) this.skylineMat.map = res.skyline;
+    this.decalMats = res.decals.map((d, i) => { const slot = this.decalSlots[i]; slot.mat.map = d.tex; slot.aspect = d.aspect; return slot; });
+    for (let i = res.decals.length; i < this.decalSlots.length; i++) this.decalSlots[i].mat.map = this.blank;
+    this.props.material.map = res.props || this.blank;
+    this.hasProps = this.props.visible = !!res.props;   // hidden = no draw call in the city places
+    this.propDefs = res.propDefs;
+    this.shown = res.name;
+    swapActive(res.name, res.skin, res.skinUV);
+  }
+
+  /** Show art set `res` on the buildings and walls already laid out: new decals and props everywhere, the old set can go. */
+  applySet(res) {
+    this.bindSet(res);
+    for (const seg of this.segments) { this.fillDecals(seg); this.fillProps(seg); }
+    this.layoutBuildings();
+    this.zones.setPin(res.name);
+  }
+
+  /** Once the zone state changed: which sets to keep (both places while cross-fading, else the current and the next) and which to show. */
+  wantSets() {
+    const z = this.zone, fading = z.from !== z.to && z.t < 1;
+    const a = placeSet(PLACES[z.from]), b = placeSet(PLACES[z.to]);
+    this.visual = fading && z.t < 0.5 ? a : b;   // the art swaps at the middle of the cross-fade
+    const key = (fading ? 1e6 : 0) + z.from * 1e4 + z.to * 100 + this.nextPlace + 1;
+    if (key === this.wantKey) return;
+    this.wantKey = key;
+    this.zones.want(fading ? [a, b] : this.nextPlace >= 0 ? [b, placeSet(PLACES[this.nextPlace])] : [b]);
+  }
+
+  /** Start fetching the art of place `idx` (the next one: 250 m before the boundary, or at the menu for the run's first place); -1 = none. */
+  preloadPlace(idx) {
+    if (idx === this.nextPlace) return;
+    this.nextPlace = idx;
+    this.wantSets();
+  }
+
+  /**
+   * One pending texture job of the wanted sets (an upload or canvas build), for screens that stop calling update() (game over,
+   * pause, a card over the menu): main.js calls it once per animation frame there, so a preload still finishes while the card is up.
+   * Returns true if a job ran. It only builds; the new art goes on screen in update().
+   */
+  pumpZones() { return this.zones.step(); }
+
+  /** Swap to the wanted set as soon as it is ready; until then (or if it failed) the one on screen stays. */
+  syncSet() {
+    const name = this.zones.alias(this.visual), res = this.zones.get(name);
+    if (res && name !== this.shown) this.applySet(res);
   }
 
   /* ---------- zone themes & tunnel look (uniform / colour / intensity changes only, no recompiles) ---------- */
@@ -134,8 +311,8 @@ export class World {
     // camera-mounted "headlamp" for tunnels / night; created at boot (intensity 0) so the light count never changes
     this.headlamp = new THREE.SpotLight(0xffe2b4, 0, 140, 0.6, 0.6, 1);
     this.scene.add(this.headlamp, this.headlamp.target);
-    this.rain = new Rain();
-    this.scene.add(this.rain.mesh);
+    this.weather = new Weather();   // rain + the places' lanterns / petals / spray / embers
+    this.scene.add(this.weather.mesh);
     this.tunnel = new TunnelShell(this.root);
     this.look = makeLook();
     this.zone = { from: 0, to: 0, t: 1 };
@@ -159,15 +336,16 @@ export class World {
     const p = camera.position;
     this.headlamp.position.set(p.x, p.y - 0.7, p.z - 0.5);
     this.headlamp.target.position.set(p.x * 0.4, 0.6, p.z - 46);
-    this.rain.update(dt, dist, speed, camera);
+    this.weather.update(dt, dist, speed, camera);
   }
 
-  /** Cross-fade between zone themes (indices into THEMES), t 0..1 (eased here). */
+  /** Cross-fade between zone themes (indices into PLACES), t 0..1 (eased here). */
   setTheme(from, to, t) {
     const z = this.zone, e = t * t * (3 - 2 * t);
     if (z.from === from && z.to === to && z.t === e) return;
     z.from = from; z.to = to; z.t = e;
     this.dirty = true;
+    this.wantSets();
   }
 
   /** Track position of the tunnel entrance to show (the one being approached or driven through), -1 for none. */
@@ -181,7 +359,9 @@ export class World {
     const t = this.tunnel;
     t.place(on ? dist + 30 : -1);
     t.curtain.visible = t.glare.visible = on;
-    this.rain.mesh.visible = on;
+    this.weather.prewarm(on);
+    this.props.count = on ? 1 : this.nProps;   // one instance so the props shader compiles here too
+    this.props.visible = on || this.hasProps;
   }
 
   applyLook() {
@@ -206,9 +386,11 @@ export class World {
     for (const b of this.boards) b.material.emissiveIntensity = L.boards;
     this.bulbMat.color.copy(BULB).multiplyScalar(L.lamps);
     if (this.skylineMat) this.skylineMat.color.copy(L.skyline);
+    this.props.material.color.copy(L.building).lerp(WHITE, Math.min(1, L.windows) * 0.6);   // lit stalls / lanterns at night
     for (const c of this.clouds) c.material.color.copy(L.clouds);
     this.headlamp.intensity = HEADLAMP * L.headlamp;
-    this.rain.setAmount(L.rain * (1 - this.shelter));
+    this.weather.setAmount(L.rain * (1 - this.shelter));
+    this.weather.blend(PLACES[this.zone.from].weather, PLACES[this.zone.to].weather, this.zone.t, this.shelter);
   }
 
   buildLights() {
@@ -223,7 +405,7 @@ export class World {
     this.scene.add(this.hemi, this.sun, this.sun.target);
   }
 
-  buildSky() {
+  buildSky(city) {
     const mat = new THREE.ShaderMaterial({
       uniforms: {
         top: { value: new THREE.Color('#2e84df') },
@@ -238,17 +420,11 @@ export class World {
 
     this.far = new THREE.Group();
     this.scene.add(this.far);
-    const img = images.skyline_tile;
-    if (img) {
-      const R = 640, arc = Math.PI * 1.3, aspect = img.width / img.height;
-      const tiles = Math.max(2, Math.round((R * arc) / (R * 0.34 * aspect)));
-      const H = (R * arc) / (tiles * aspect);
-      const tex = makeTexture(img, { repeat: true });
-      tex.wrapT = THREE.ClampToEdgeWrapping;
-      tex.repeat.set(-tiles, 1);
+    if (city.skyline) {
+      const { R, arc, H } = this.skyDims;
       const geo = new THREE.CylinderGeometry(R, R, H, 96, 1, true, Math.PI - arc / 2, arc);
       const sky = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, side: THREE.BackSide, depthWrite: false, fog: false,
+        map: city.skyline, transparent: true, side: THREE.BackSide, depthWrite: false, fog: false,
       }));
       sky.material.color.setRGB(0.96, 0.95, 0.98);
       this.skylineMat = sky.material;
@@ -286,7 +462,7 @@ export class World {
     ground.receiveShadow = true;
     T.add(ground);
 
-    const bTex = makeTexture(gravel, { repeat: true });
+    const bTex = gTex.clone();   // shares the canvas Source: one GPU upload for both gravel textures, own repeat
     bTex.repeat.set(3.1 / 4.4, len / 4.4);
     const bedMat = new THREE.MeshStandardMaterial({
       map: bTex, color: 0x9a8a78, roughness: 1, polygonOffset: true, polygonOffsetFactor: -1,
@@ -396,9 +572,12 @@ varying float vViewZ;`)
           if (fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453) > keepS) discard;`);
     };
     const steelMesh = new THREE.Mesh(mergeGeometries(steel, false), smat);
-    steelMesh.castShadow = steelMesh.receiveShadow = true;
+    // Shadow pass (1024 map, redrawn every frame): the 528 m gantry / lamp merges are never culled, so lamps cast none and
+    // the steel only on desktop (its stripes across the track are a depth cue there)
+    steelMesh.receiveShadow = true;
+    steelMesh.castShadow = !isCoarsePointer();
     const lampMesh = new THREE.Mesh(mergeGeometries(lamps, false), vmat);
-    lampMesh.castShadow = lampMesh.receiveShadow = true;
+    lampMesh.receiveShadow = true;
     // Wires dissolve (screen-door dither) close to the camera so they never slice across the view.
     const wmat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.15 });
     wmat.onBeforeCompile = (sh) => {
@@ -425,10 +604,8 @@ varying float vViewZ;`)
     box.addGroup(6, 30, 1);
     this.types = [];
     for (let i = 1; i <= 4; i++) {
-      const src = images[`facade_0${i}`] || fallbackFacadeCanvas(i - 1);
-      const mats = [
-        new THREE.MeshStandardMaterial({ map: makeTexture(src), roughness: 0.92,
-          emissive: 0xffffff, emissiveMap: makeTexture(windowGlowCanvas(src, 71 * i)), emissiveIntensity: 0 }),
+      const mats = [   // the face's map / glow come from the art set on screen (bindSet)
+        new THREE.MeshStandardMaterial({ roughness: 0.92, emissive: 0xffffff, emissiveIntensity: 0 }),
         new THREE.MeshStandardMaterial({ color: FACADE_TINT[i - 1], roughness: 0.95 }),
       ];
       const im = new THREE.InstancedMesh(box, mats, 160);
@@ -437,11 +614,11 @@ varying float vViewZ;`)
       im.frustumCulled = false;
       im.count = 0;
       this.root.add(im);
-      this.types.push({ im, aspect: src.width / src.height });
+      this.types.push({ im, aspect: 0.43 });
     }
     const unit = new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0);
+    // parapets, water towers and billboard frames cast no shadow (shadow pass cost; buildings, walls and trains carry it)
     this.parapets = new THREE.InstancedMesh(unit, new THREE.MeshStandardMaterial({ color: 0x6e5c4e, roughness: 0.9 }), 640);
-    this.parapets.castShadow = true;
 
     const tw = [];
     for (const x of [-0.9, 0.9]) for (const z of [-0.9, 0.9]) tw.push(pbox(0.18, 3, 0.18, x, 1.5, z, '#5a4636'));
@@ -452,7 +629,6 @@ varying float vViewZ;`)
     tw.push(paint(new THREE.ConeGeometry(1.55, 1.15, 18).translate(0, 6.27, 0), '#4c3b30'));
     this.towers = new THREE.InstancedMesh(mergeGeometries(tw, false),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.85 }), 160);
-    this.towers.castShadow = true;
 
     const bw = 8.4, bh = bw * 320 / 1024;
     this.boardSize = [bw, bh];
@@ -463,7 +639,6 @@ varying float vViewZ;`)
     ];
     this.frames = new THREE.InstancedMesh(mergeGeometries(frame, false),
       new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.7 }), 40);
-    this.frames.castShadow = true;
     const boardGeo = new THREE.PlaneGeometry(bw, bh).translate(0, 3.0 + bh / 2, 0.04);
     this.boards = [0, 1].map((k) => new THREE.InstancedMesh(boardGeo,
       new THREE.MeshStandardMaterial({ map: makeTexture(billboardCanvas(k)), roughness: 0.6, emissive: 0xffffff, emissiveIntensity: 0.12,
@@ -479,20 +654,42 @@ varying float vViewZ;`)
     this.tinted = [...this.types.flatMap((t) => t.im.material), this.parapets.material, this.towers.material, this.frames.material]
       .map((mat) => ({ mat, base: mat.color.clone() }));
 
-    this.decalMats = [];
-    for (let i = 1; i <= 6; i++) {
-      const img = images[`graffiti${i}`];
-      if (!img) continue;
-      this.decalMats.push({
-        aspect: img.width / img.height,
+    // one material per decal of the set on screen (the shared set has up to 6); their maps come from bindSet
+    this.decalSlots = [];
+    for (let i = 0; i < 6; i++) {
+      this.decalSlots.push({
+        aspect: 1,
         mat: new THREE.MeshStandardMaterial({
-          map: makeTexture(img), transparent: true, depthWrite: false, roughness: 0.85,
+          map: this.blank, transparent: true, depthWrite: false, roughness: 0.85,
           polygonOffset: true, polygonOffsetFactor: -2,
         }),
       });
     }
+    this.decalMats = [];
     this.decalGeo = new THREE.PlaneGeometry(1, 1);
     this.decalPool = [];
+
+    // track-side props of the place sets: one InstancedMesh, the atlas cell of each instance in `aCell` (uv offset + scale)
+    this.propCell = new Float32Array(PROP_MAX * 4);
+    const propGeo = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+    propGeo.setAttribute('aCell', new THREE.InstancedBufferAttribute(this.propCell, 4).setUsage(THREE.DynamicDrawUsage));
+    const propMat = new THREE.MeshBasicMaterial({ map: this.blank, alphaTest: 0.4 });
+    propMat.onBeforeCompile = (sh) => {
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec4 aCell;')
+        .replace('#include <uv_vertex>', `#include <uv_vertex>
+#ifdef USE_MAP
+vMapUv = uv * aCell.zw + aCell.xy;
+#endif`);
+    };
+    this.props = new THREE.InstancedMesh(propGeo, propMat, PROP_MAX);
+    this.props.frustumCulled = false;
+    this.props.count = 0;
+    this.props.visible = false;
+    this.nProps = 0;
+    this.hasProps = false;
+    this.propDefs = [];   // pictures of the props atlas on screen: {u, v, du, dv, aspect, height}
+    this.root.add(this.props);
   }
 
   getDecal() {
@@ -503,8 +700,6 @@ varying float vViewZ;`)
   }
 
   fillSegment(seg) {
-    for (const d of seg.decals) { d.visible = false; this.decalPool.push(d); }
-    seg.decals.length = 0;
     seg.buildings.length = 0;
     const end = seg.s + C.SEG_LEN;
     for (const side of [-1, 1]) {
@@ -530,6 +725,14 @@ varying float vViewZ;`)
       b.board = Math.random() < 0.6 ? 0 : 1;
       b.tower = false;
     }
+    this.fillDecals(seg);
+    this.fillProps(seg);
+  }
+
+  /** Wall decals of a segment from the art set on screen (the old ones go back to the pool). */
+  fillDecals(seg) {
+    for (const d of seg.decals) { d.visible = false; this.decalPool.push(d); }
+    seg.decals.length = 0;
     if (this.decalMats.length) {
       const n = C.randi(2, 3);
       for (let i = 0; i < n; i++) {
@@ -545,19 +748,36 @@ varying float vViewZ;`)
     }
   }
 
+  /** Track-side props of a segment (stalls, lamps, trees ... of the place set; none for the shared set). A local generator: Math.random stays untouched. */
+  fillProps(seg) {
+    seg.props.length = 0;
+    if (!this.hasProps) return;
+    const r = rng(((seg.s * 31) | 0) ^ 0x5bd1e995);
+    for (const side of [-1, 1]) {
+      for (let k = 0; k < PROPS_PER_SIDE; k++) {
+        if (r() < 0.25) continue;
+        const def = this.propDefs[Math.floor(r() * this.propDefs.length)];
+        const x = side * (C.WALL_X + 1.5 + r() * 0.9), zc = -(seg.s + (k + 0.2 + r() * 0.6) * (C.SEG_LEN / PROPS_PER_SIDE));
+        const h = def.height * (0.87 + 0.26 * r()), fit = Math.min(1, PROP_MAX_W / (h * def.aspect));   // wide ones shrink to fit the pavement
+        seg.props.push({ def, side, x, zc, w: h * def.aspect * fit, h: h * fit });
+      }
+    }
+  }
+
   layoutBuildings() {
     const counts = this.types.map(() => 0);
-    let np = 0, nt = 0, nf = 0;
+    let np = 0, nt = 0, nf = 0, npr = 0;
     const nb = [0, 0];
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
     const col = new THREE.Color(), up = new THREE.Vector3(0, 1, 0);
     for (const seg of this.segments) {
       for (const b of seg.buildings) {
-        const t = this.types[b.type];
+        // a set with fewer facades than the 4 meshes spreads the extra type over the others
+        const ti = b.type < this.nTypes ? b.type : ((Math.floor(-b.zc) % this.nTypes) + this.nTypes) % this.nTypes, t = this.types[ti];   // zc > 0 (first segment) must not give a negative index (RT-M1-C8)
         q.setFromAxisAngle(up, b.side < 0 ? 0 : Math.PI);
         m.compose(p.set(b.x, 0, b.zc), q, s.set(b.depth, b.H, b.Lz));
-        t.im.setMatrixAt(counts[b.type], m);
-        t.im.setColorAt(counts[b.type]++, col.setScalar(b.tint));
+        t.im.setMatrixAt(counts[ti], m);
+        t.im.setColorAt(counts[ti]++, col.setScalar(b.tint));
         m.compose(p.set(b.x, b.H + (np % 2) * 0.012, b.zc), q, s.set(b.depth + 0.35 + (np % 3) * 0.014, 0.5, b.Lz + 0.35));
         this.parapets.setMatrixAt(np, m);
         this.parapets.setColorAt(np++, col.setScalar(b.tint));
@@ -573,6 +793,17 @@ varying float vViewZ;`)
           this.boards[b.board].setMatrixAt(nb[b.board]++, m);
         }
       }
+      for (const pr of seg.props) {
+        if (npr >= PROP_MAX) break;
+        q.setFromAxisAngle(up, pr.side < 0 ? Math.PI / 2 - 0.55 : -Math.PI / 2 + 0.55);   // faces the track, turned toward the camera
+        m.compose(p.set(pr.x, 0, pr.zc), q, s.set(pr.w, pr.h, 1));
+        this.props.setMatrixAt(npr, m);
+        const d = pr.def, o = npr++ * 4;
+        this.propCell[o] = d.u;
+        this.propCell[o + 1] = d.v;
+        this.propCell[o + 2] = d.du;
+        this.propCell[o + 3] = d.dv;
+      }
     }
     this.types.forEach((t, i) => {
       t.im.count = counts[i];
@@ -583,6 +814,9 @@ varying float vViewZ;`)
     this.towers.count = nt;
     this.frames.count = nf;
     this.boards.forEach((b, i) => { b.count = nb[i]; b.instanceMatrix.needsUpdate = true; });
+    this.props.count = this.nProps = npr;
+    this.props.instanceMatrix.needsUpdate = true;
+    this.props.geometry.attributes.aCell.needsUpdate = true;
     for (const im of [this.parapets, this.towers, this.frames]) im.instanceMatrix.needsUpdate = true;
     if (this.parapets.instanceColor) this.parapets.instanceColor.needsUpdate = true;
   }
@@ -604,6 +838,8 @@ varying float vViewZ;`)
     this.sun.target.position.set(Math.round(camera.position.x / texel) * texel, 0, -22);
     this.sun.position.copy(this.sun.target.position).add(this.look.sunDir);
     this.updateAmbience(dt, dist, camera, speed);
+    this.zones.step();
+    if (this.visual !== this.shown) this.syncSet();
     let dirty = false;
     for (const seg of this.segments) {
       if (dist - (seg.s + C.SEG_LEN) > 45) {

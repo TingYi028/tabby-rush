@@ -7,10 +7,10 @@ export const TRICK = {
   cap: 5,                 // combo multiplier cap
   points: 50,             // × combo × totalMult()
   perfectPoints: 150,     // perfect jump / roll and grazes
-  rush: 0.03,             // Rush gained per normal trick
-  rushPerfect: 0.08,
-  rushGraze: 0.14,
-  rushTriple: 0.15,       // jump + roll + graze in one chain, once per chain
+  rush: 0.012,            // Rush gained per normal trick
+  rushPerfect: 0.035,
+  rushGraze: 0.07,
+  rushTriple: 0.1,        // jump + roll + graze in one chain, once per chain
   slowmo: 0.22,           // perfect / graze only
   slowmoCooldown: 1.2,
   perfectJump: [1.05, 1.4],  // feet height above ground over the hurdle

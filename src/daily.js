@@ -5,16 +5,20 @@ import { store } from './audio.js';
  * player), a weekday modifier, today's best score, and a streak of consecutive days with a completed run
  * (one that reached DAILY.goal metres). The first completion of a day pays DAILY.reward x streak multiplier.
  *
- * Saved as `tabbyrush.daily` = { day, best, last, streak }: `best` is the best daily score on `day`,
- * `last` the most recent day completed and `streak` the run of consecutive completed days ending at `last`.
+ * Saved as `tabbyrush.daily` = { day, best, last, streak, wall }: `best` is the best daily score on `day`,
+ * `last` the most recent day completed, `streak` the run of consecutive completed days ending at `last` and `wall` the
+ * wall-clock time (ms) of that claim: a claim for a later calendar day needs DAILY.claimGapH hours of wall time since
+ * the last one, so the ladder doesn't climb by changing the day on the clock. A run that reaches the goal inside that gap
+ * pays nothing yet: completeDaily() returns null and dailyStatus().held / .wait let the game-over card say when it can be claimed.
  */
 
 export const DAILY = {
-  goal: 1000,       // metres that complete today's challenge
+  goal: 2000,       // metres that complete today's challenge
   reward: 300,      // coins for the first completion of the day, x streakMult()
   streakCap: 5,     // the multiplier stops growing after this many days in a row
-  fastSpeed: 27,    // 高速起跑: run-speed floor (BASE_SPEED 18.5 .. MAX_SPEED 37)
+  fastSpeed: 35,    // 高速起跑: run-speed floor (BASE_SPEED 21 .. MAX_SPEED 42)
   magnetTime: 15,   // 磁鐵開局: seconds of magnet from the start line
+  claimGapH: 10,    // hours of wall time between two rewards (a new calendar day alone is not enough)
 };
 
 /** Weekday modifiers, indexed by Date#getDay() (0 = Sunday). */
@@ -57,13 +61,13 @@ export function dailyToday(d = new Date()) {
 }
 
 // In-memory copy so the reward can't be claimed twice in one session when storage is unavailable.
-let mem = { day: 0, best: 0, last: 0, streak: 0 };
+let mem = { day: 0, best: 0, last: 0, streak: 0, wall: 0 };
 function load() {
   const s = store.get('daily', mem);
   const n = (v) => (Number.isFinite(v) ? v : 0);
-  const d = s && typeof s === 'object' ? { day: n(s.day), best: n(s.best), last: n(s.last), streak: n(s.streak) } : { ...mem };
+  const d = s && typeof s === 'object' ? { day: n(s.day), best: n(s.best), last: n(s.last), streak: n(s.streak), wall: n(s.wall) } : { ...mem };
   // storage that can be read but not written (quota full) would hand back stale data: trust the newer session copy
-  if (mem.last > d.last) { d.last = mem.last; d.streak = mem.streak; }
+  if (mem.last > d.last) { d.last = mem.last; d.streak = mem.streak; d.wall = mem.wall; }
   if (mem.day > d.day || (mem.day === d.day && mem.best > d.best)) { d.day = mem.day; d.best = mem.best; }
   return d;
 }
@@ -75,19 +79,40 @@ function save(s) {
 export const streakMult = (n) => 1 + 0.5 * (Math.min(Math.max(1, n), DAILY.streakCap) - 1);
 export const rewardFor = (n) => Math.round(DAILY.reward * streakMult(n));
 
-/** { best: today's best daily score, done: completed today, streak: consecutive days still alive (0 if broken) }. */
+/**
+ * Can `day`'s reward be claimed? { reason, wait }: reason '' (yes), 'done' (day already claimed) or 'soon' (a later calendar day
+ * but the last reward is less than DAILY.claimGapH of wall time old: the clock was moved, or a late-night claim); wait = ms left for 'soon'.
+ * A clock set back is ignored (it only ever blocks "too soon").
+ */
+export function claimCheck(day, s = load(), now = Date.now()) {
+  if (s.last >= day) return { reason: 'done', wait: 0 };
+  const since = now - s.wall, gap = DAILY.claimGapH * 3600000;
+  if (s.wall > 0 && since >= 0 && since < gap) return { reason: 'soon', wait: gap - since };
+  return { reason: '', wait: 0 };
+}
+
+let heldDay = 0;   // the day whose finished run was held back by the gap (this session): the game-over card says so
+
+/**
+ * { best: today's best daily score, done: completed today, streak: consecutive days still alive (0 if broken),
+ *   held: a run of `day` reached the goal but the reward waits (claimCheck 'soon'), wait: ms until it can be claimed (0 = now) }.
+ */
 export function dailyStatus(day = dayKey()) {
   const s = load();
   const alive = s.last === day || s.last === prevDay(day);
-  return { best: s.day === day ? s.best : 0, done: s.last === day, streak: alive ? s.streak : 0 };
+  const c = claimCheck(day, s);
+  return { best: s.day === day ? s.best : 0, done: s.last === day, streak: alive ? s.streak : 0, held: heldDay === day && c.reason === 'soon', wait: c.wait };
 }
 
-/** First completion of `day`: extend the streak and return { streak, mult, coins }; null if already completed. */
+/** First completion of `day`: extend the streak and return { streak, mult, coins }; null if already completed or held back by the gap. */
 export function completeDaily(day) {
   const s = load();
-  if (s.last >= day) return null;
+  const c = claimCheck(day, s);
+  if (c.reason) { if (c.reason === 'soon') heldDay = day; return null; }
+  heldDay = 0;
   s.streak = s.last === prevDay(day) ? s.streak + 1 : 1;
   s.last = day;
+  s.wall = Date.now();
   save(s);
   return { streak: s.streak, mult: streakMult(s.streak), coins: rewardFor(s.streak) };
 }
@@ -126,6 +151,11 @@ export function rowHook(id) {
 
 const $ = (id) => document.getElementById(id);
 const fmt = new Intl.NumberFormat('en-US');
+/** Local HH:MM that is `wait` ms from now (rounded up to the minute). */
+const clock = (wait) => {
+  const t = new Date(Math.ceil((Date.now() + wait) / 60000) * 60000);
+  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+};
 
 export class DailyUI {
   constructor(onPlay) {
@@ -152,8 +182,10 @@ export class DailyUI {
     if (!res) return;
     $('go-daily-best').textContent = fmt.format(res.best);
     $('go-daily-new').hidden = !res.newBest;
+    const held = res.reward || res.done ? null : dailyStatus(res.day || dayKey());
     $('go-daily-note').textContent = res.reward
       ? `每日獎勵 +${fmt.format(res.reward.coins)} 金幣・連續 ${res.reward.streak} 天`
-      : res.done ? `今日挑戰已完成・連續 ${res.streak} 天` : `跑到 ${fmt.format(DAILY.goal)} m 就完成今日挑戰`;
+      : res.done ? `今日挑戰已完成・連續 ${res.streak} 天`
+        : held && held.held ? `獎勵 ${clock(held.wait)} 後再挑戰可領` : `跑到 ${fmt.format(DAILY.goal)} m 就完成今日挑戰`;
   }
 }

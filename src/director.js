@@ -1,10 +1,10 @@
 import * as C from './config.js';
-import { THEMES, themeIndexAt } from './themes.js';
+import { PLACES, placeAt } from './themes.js';
 
 /*
  * Zone director: schedules the dark-tunnel set pieces along the track (in track distance s, so the
  * generator ~250 m ahead and the visuals at the hero agree) and tunes each generated row for the
- * zone theme / tunnel it falls in. Spawner calls tuneRow() once per row (a one-line hook).
+ * place / tunnel it falls in. Spawner calls tuneRow() once per row (a one-line hook).
  */
 
 export const TUNNEL = {
@@ -86,15 +86,17 @@ function fair(prevBlocked, content, blocked) {
  *  - tunnel rows: no spring pads or boost strips; ramped trains become flat trains when that stays fair
  *  - more oncoming trains timed to meet the hero inside a tunnel, and in zones with spawn.moving
  *  - zones with spawn.barriers get extra hurdles / overhead signs in free side lanes
+ *  - `dense` (the peak.js numbers of the span, for a peak-hour row outside a tunnel; false otherwise): oncoming trains
+ *    armed with its `arm` chance, at its `bookGap` spacing
  */
-export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
-  const spawn = THEMES[themeIndexAt(s0)].spawn;
+export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather, dense) {
+  const spawn = PLACES[placeAt(s0)].spawn;
 
   // the row's obstacles sit at s0+2 .. s0+20; keep a short run-up before the portal clean too
   if (inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6)) {
     for (let L = 0; L < 3; L++) if (content[L] === 'pad' || content[L] === 'boost') content[L] = 'empty';
     for (let L = 0; L < 3; L++) {
-      if (content[L] !== 'rampTrain' || (sp.lastBoost === k - 1 && sp.boostLane === L)) continue;
+      if (content[L] !== 'rampTrain' || (sp.lastBoost === k - 1 && sp.boostLane === L) || (sp.padRow === k - 1 && sp.padLanes.includes(L))) continue;
       content[L] = 'train';
       blocked[L] = true;
       if (!fair(prevBlocked, content, blocked)) { content[L] = 'rampTrain'; blocked[L] = false; }
@@ -104,7 +106,7 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
   if (spawn.barriers > 0 && !breather && k > 3) {
     const tunnelRow = inTunnel(s0 + C.SLOT / 2, C.SLOT / 2 + 6);
     for (let L = 0; L < 3; L++) {
-      if (content[L] !== 'empty' || L === sp.safe || sp.reserved(sp.reserve, L)) continue;
+      if (content[L] !== 'empty' || L === sp.safe || sp.reserved(sp.reserve, L) || (sp.comboRow === k - 1 && sp.comboLane === L)) continue;
       // only ~0.2 eligible lanes per row late in a run, so this adds about `barriers` × the base ~0.47 barriers per row
       if (Math.random() < spawn.barriers * 2.6) {
         const kind = Math.random() < 0.5 ? 'hurdle' : 'overhead';
@@ -118,6 +120,7 @@ export function tuneRow(sp, k, s0, content, blocked, prevBlocked, breather) {
   // The spawner spaces oncoming trains >= 13 rows apart, so a higher rate also needs a shorter gap.
   let extra = spawn.moving, gap = spawn.movingGap || 6;
   if (inTunnel(s0 + 72, -12)) { extra = Math.max(extra, TUNNEL.moving); gap = Math.min(gap, TUNNEL.movingGap); }
+  if (dense) { extra = Math.max(extra, dense.arm); gap = Math.min(gap, dense.bookGap); }
   if (extra <= 0 || sp.reserve || s0 + C.SLOT <= 360 || k + 1 - sp.lastMoving <= gap) return;
   if (content[0] === 'moving' || content[1] === 'moving' || content[2] === 'moving') return;
   if (Math.random() >= extra) return;
