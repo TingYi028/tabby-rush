@@ -92,6 +92,11 @@ body:not([data-screen="menu"]) .cl-ver, body:not([data-screen="menu"]) .cl-banne
   .cl-banner { padding-block: 4px; }
   .cl-bn-sub { display: none; }
 }
+/* desktop / tablet landscape: the menu is two columns (hero left, logo + 開始衝刺 right: the button starts ~50 px under the corner buttons, so a
+   banner centred over the page touches it, B-r03-4); the banner moves to the free hero column, still below the ? button and the version pill */
+@media (min-width: 821px) and (min-aspect-ratio: 1001/1000) and (min-height: 421px) {
+  .cl-banner { left: 25%; width: min(430px, calc(50% - 40px)); }
+}
 /* short landscape phones: one line between 怎麼玩 (left) and 設定 / 聲音 (right, 120 px from the edge), level with the corner buttons */
 @media (max-height: 420px) {
   .cl-banner { top: calc(env(safe-area-inset-top, 0px) + 6px); padding-block: 2px;

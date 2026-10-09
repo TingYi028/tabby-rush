@@ -3,6 +3,7 @@
 <meta charset="utf-8">
 <meta name="robots" content="noindex">
 <meta name="tabby-channel" content="beta">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'sha256-cBf0aYAN+425nsQqfLZU0kwkDWwsC7/cj5gmZGmzndc=' blob:; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; media-src 'self' blob: data:; connect-src 'self' https://hymkticlclgcmqibiznc.supabase.co; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <title>Tabby Rush</title>
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <link rel="icon" href="assets/ui/icon_coin.webp">
@@ -743,20 +744,8 @@
 <link rel="stylesheet" href="shop.css"><!-- 造型店 (src/shop-ui.js) -->
 <link rel="stylesheet" href="wish.css"><!-- 許願池 (src/wish-ui.js) -->
 <link rel="stylesheet" href="changelog.css"><!-- 更新日誌 (src/changelog.js) -->
-<script>
-  // Browsers without import maps (iOS Safari before 16.4) get them from es-module-shims; others skip it
-  if (!(window.HTMLScriptElement && HTMLScriptElement.supports && HTMLScriptElement.supports('importmap'))) {
-    const s = document.createElement('script');
-    s.async = true;
-    s.src = 'https://cdn.jsdelivr.net/npm/es-module-shims@1.10.0/dist/es-module-shims.js';
-    document.head.appendChild(s);
-  }
-</script>
-<script type="importmap">
-  { "imports": {
-      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/" } }
-</script>
+<script src="vendor/boot-shim.js"></script><!-- es-module-shims only where import maps are missing -->
+<script type="importmap">{ "imports": { "three": "./vendor/three.module.js", "three/addons/": "./vendor/addons/" } }</script>
 
 <div id="app">
   <canvas id="scene" aria-label="Tabby Rush 遊戲畫面"></canvas>

@@ -146,7 +146,7 @@ export class World {
     this.nextPlace = -1;
     this.wantKey = -1;
     this.zones = new ZoneSets({
-      load: (name) => (name === SHARED ? Promise.resolve({}) : loadSet(name)),
+      load: (name) => (name === SHARED ? Promise.resolve({}) : loadSet(name, PLACES.some((p) => placeSet(p) === name && !!p.skin))),
       build: (name, files) => this.buildSet(name, files),
       free: (name, res) => this.freeSet(res),
       now: () => performance.now(),

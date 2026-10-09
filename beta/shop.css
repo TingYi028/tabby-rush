@@ -228,6 +228,26 @@
   .cs-filter { max-width: 420px; }
 }
 @media (max-height: 380px) { .cs-desc { display: none; } }
+/* very short landscape phones (740x360 showed one card row, B-r03-5): thinner screen margin, a one-line header, a slimmer tab bar and chip row,
+   smaller thumbnails, so the list shows two rows (about 150 of the ~195 px of the list body at 360 px high) */
+@media (max-height: 420px) {
+  #cshop { padding-block: calc(env(safe-area-inset-top, 0px) + 6px) calc(env(safe-area-inset-bottom, 0px) + 12px); }
+  .cs-card { max-height: calc(100vh - 18px); max-height: calc(100dvh - 18px - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    gap: 5px; padding: 6px 12px 8px; }
+  .cs-card h2 { font-size: 24px; }
+  .cs-bank { padding: 1px 12px 1px 3px; }
+  .cs-bank img { width: 28px; height: 28px; }
+  .cs-bank b { font-size: 22px; }
+  .cs-tab { min-height: 34px; padding-block: 2px; }
+  .cs-card .btn-alt { min-height: 44px; box-sizing: border-box; padding-block: 4px 6px; }
+  .cs-body { padding-bottom: 6px; }
+  .cs-filter { margin-bottom: 6px; }
+  .cs-chip { position: relative; min-height: 32px; padding-block: 2px; }
+  .cs-chip::before { content: ''; position: absolute; inset: -6px 0; }   /* the 44 px touch target stays */
+  .cs-pv { width: 44px; height: 55px; }
+  .cs-wide .cs-pv { height: 40px; }
+  .cs-item { padding-block: 4px; }
+}
 /* the menu is tight on short portrait phones: a one-row strip; the shop keeps only the collection count of its sub line (a 320x568 phone shows 2 cards otherwise) */
 @media (max-height: 700px) { .arm-note { display: none; } .arm-strip { padding-block: 4px; } .cs-sub-t { display: none; } .card .cs-sub:not(:has(b:not(:empty))) { display: none; } }
 

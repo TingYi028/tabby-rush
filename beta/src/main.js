@@ -416,7 +416,6 @@ function flash(color, amount) {
 function startRun(daily = false) {
   audio.unlock();
   audio.play('go', { vol: 0.7 });
-  audio.music('game');
   Object.assign(G, {
     state: 'play', dist: 0, score: 0, coins: 0, time: 0, timeScale: 1, deathT: 0, deathCause: null, speed: C.BASE_SPEED,
     rush: 0, fever: 0, combo: 0, comboT: 0, slowmo: 0, rushCool: 0, peakMul: 1, peakIdx: -1, peakOk: false, peakClear: null, peakCoins: 0,
@@ -431,6 +430,8 @@ function startRun(daily = false) {
   setupRunMode(daily);
   // the tunnel schedule shapes the track, so it must come from the same seed as the generator (daily runs)
   spawner.seeded(() => { resetZones(!!daily); spawner.reset(true); });   // a daily run redraws its place order from the seed
+  audio.place(PLACES[placeAt(0)].id);
+  audio.music('game');   // lobby track -> the start place's run track
   resetSurge();
   player.reset();
   fx.clear();
@@ -569,13 +570,15 @@ function resume() {
 
 function toMenu() {
   if (audio.ctx && audio.ctx.state === 'suspended') audio.ctx.resume();
-  if (G.state === 'pause' || G.state === 'play' || G.state === 'revive') {
+  const midRun = G.state === 'pause' || G.state === 'play' || G.state === 'revive';
+  if (midRun) {
     // quitting mid-run: the coins picked up so far are still banked (missions / stats are committed by progression.menu())
     G.bank += G.coins;
     G.coins = 0;
     store.set('bank', G.bank);
   }
   audio.play('ui_click', { vol: 0.6 });
+  if (midRun) drawPlaces();   // the order of the run just quit is spent; the game-over card has drawn the next one already
   audio.music('menu');
   G.state = 'menu';
   G.camBlend = 0;
@@ -597,7 +600,6 @@ function toMenu() {
   showChallenge();
   flushPending();
   resetZones();
-  drawPlaces();
   ui.stats(G.best, G.bank);
   dailyUI.refresh();
   ui.show('menu');
@@ -728,16 +730,20 @@ function endFever() {
 
 const zone = { idx: 0, from: 0, t: 1, tunnel: -1, phase: 0 };
 
-/** Draw the next normal run's place order and start fetching its first place's art (the menu keeps the city backdrop). */
-function drawPlaces() {
-  resetPlaces();
+/**
+ * Draw the next normal run's place order (`keep`: it is drawn already, boot did it for the first music) and start fetching its
+ * first place's art and music: the lobby shows that place (resetZones) and plays its lobby track.
+ */
+function drawPlaces(keep = false) {
+  if (!keep) resetPlaces();
   world.preloadPlace(placeAt(0));
+  audio.lobby(PLACES[placeAt(0)].id);
 }
 
-/** The run's first place (the menu shows 午後) with no tunnel and a fresh tunnel schedule; a daily run redraws the order from its seed. */
+/** The run's first place (the menu shows it too, as the backdrop of the lobby) with no tunnel and a fresh tunnel schedule; a daily run redraws the order from its seed. */
 function resetZones(draw = false) {
   if (draw) resetPlaces();
-  const start = G.state === 'menu' ? 0 : placeAt(0);
+  const start = placeAt(0);
   Object.assign(zone, { idx: start, from: start, t: 1, tunnel: -1, phase: 0 });
   resetDirector();
   world.setTheme(start, start, 1);   // first: the preloaded start set is now on screen, so dropping the preload pin keeps it
@@ -754,9 +760,11 @@ function updateZones(dt) {
     zone.idx = z;
     zone.t = 0;
     if (G.state === 'play') ui.toast(PLACES[z].toast, null, PLACES[z].tone);
+    audio.place(PLACES[z].id);   // cross-fade to the new place's music
   }
   const ahead = placeAt(G.dist + 250);   // fetch + upload the next place's art before the boundary
   if (G.state !== 'over') world.preloadPlace(ahead !== zone.idx ? ahead : -1);   // the game-over card keeps the next run's first place (drawPlaces)
+  if (G.state === 'play') { const song = placeAt(G.dist + 500); audio.preloadPlace(song !== zone.idx ? PLACES[song].id : null); }   // music: 500 m (>= 8 s) ahead
   if (zone.t < 1) {
     zone.t = Math.min(1, zone.t + dt / PLACE.fade);
     world.setTheme(zone.from, zone.idx, zone.t);
@@ -974,6 +982,7 @@ function dailyOver(score) {
 function offerRevive() {
   G.state = 'revive';
   if (cosmetics.useRevive()) { acceptRevive(true); return; } // 復活券: free, no overlay (never in the daily challenge)
+  progression.refreshBank(); // another tab may have spent the bank since this run began: the card shows what is really there
   revive.open(reviveCost(G.revives), G.bank + G.coins);
 }
 
@@ -983,7 +992,11 @@ function updateRevive(raw) {
 
 /** `free`: a 復活券 paid for it (no coins, and the next coin revive doesn't get dearer). */
 function acceptRevive(free = false) {
-  if (G.state !== 'revive' || (!free && !spendCoins(reviveCost(G.revives)))) return;
+  if (G.state !== 'revive') return;
+  if (!free && !spendCoins(reviveCost(G.revives))) {   // the other tab spent the coins while the card was up: show the real balance
+    revive.open(reviveCost(G.revives), G.bank + G.coins);
+    return;
+  }
   if (!free) G.revives++;
   cosmetics.event('revive');
   clearForRevive(spawner, G.dist, runSpeed(), REVIVE.invuln);
@@ -1005,11 +1018,11 @@ function declineRevive() {
 
 /** Pay `n` coins, from the bank first and then from this run's coins; false if they don't cover it. */
 function spendCoins(n) {
+  progression.refreshBank();   // the newest stored bank first (a second tab may have spent it)
   if (G.bank + G.coins < n) return false;
-  const fromBank = Math.min(G.bank, n);
-  G.bank -= fromBank;
+  const fromBank = Math.max(0, Math.min(G.bank, n));
   G.coins -= n - fromBank;
-  progression.saveNow();
+  progression.payBank(fromBank);   // written to the stored save as a signed change, never clamped to 0
   return true;
 }
 
@@ -1427,6 +1440,8 @@ async function boot() {
   let artP = 0, musicP = 0;
   const show = () => ui.loading(Math.min(0.99, artP * 0.4 + musicP * 0.6));
   audio.onProgress = (p) => { musicP = p; show(); };
+  resetPlaces();   // the first run's place order: its lobby track is the boot soundtrack
+  audio.lobby(PLACES[placeAt(0)].id);
   audio.preload();
   const fonts = Promise.race([document.fonts.load('40px "Lilita One"'), new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
   // music is a nice-to-have: never let a slow or failed download keep the player on the loading screen
@@ -1478,7 +1493,8 @@ async function boot() {
   ui.show('menu');
   cosmetics.menu(); // announces achievement unlocks once
   showChallenge();
-  drawPlaces();   // the first run's place order + art preload
+  drawPlaces(true);   // the first run's art preload (the order was drawn above for the music)
+  resetZones();       // the lobby backdrop is that place
   checkNewVersion({ fresh: progression.runsPlayed() === 0 }); // one-time 「已更新到 v1.x」 banner; brand-new players are marked silently
   flushPending();
   requestAnimationFrame(frame);

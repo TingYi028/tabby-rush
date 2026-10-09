@@ -387,6 +387,42 @@ export function catchUp() {
 }
 
 /**
+ * The bank as the newest save has it, for a decision about coins (the coin revive). Idle: the full catchUp(). Mid-run a
+ * stale tab cannot take the other tab's save (the run's missions live in this copy), so only the coins that tab changed
+ * since this tab last read or wrote are moved into G.bank (and the game-over ledger's start line); the rest waits for
+ * the end of the run. Without this the revive card shows, and sells, coins the other tab already spent.
+ */
+export function refreshBank() {
+  if (!save || !G) return;
+  if (!run.active) { catchUp(); return; }
+  const raw = store.get('save', null);
+  if (!raw || nat(raw.rev) <= save.rev) return;
+  const theirs = nat(raw.bank) - baseBank;
+  G.bank += theirs;
+  run.bank0 += theirs;
+  baseBank += theirs;
+}
+
+/**
+ * Pay `n` coins out of the bank. Mid-run in a stale tab a normal write is refused, so the payment goes straight into the
+ * stored save as a signed change (bank - n, rev + 1; nothing else of the other tab's save is touched) and this tab's own
+ * pending change stays what it was: at the end of the run adopt() lands on stored bank + own, never below what is really there.
+ */
+export function payBank(n) {
+  n = nat(n);
+  if (!save || !G || !n) return;
+  refreshBank();
+  G.bank -= n;
+  const raw = run.active ? store.get('save', null) : null;
+  if (!raw || nat(raw.rev) <= save.rev) { persist(); return; }
+  raw.bank = Math.max(0, nat(raw.bank) - n);
+  raw.rev = nat(raw.rev) + 1;
+  baseBank = raw.bank;
+  store.set('save', raw);
+  store.set('bank', raw.bank);
+}
+
+/**
  * Write the save. `withRun` folds the unfinished run's progress into the written copy only (tab hidden / closed).
  * Two tabs share one localStorage: a write that would change nothing is skipped (a tab that is only opened or hidden
  * must not look like a writer), and one from a tab whose copy is older than the stored `rev` is refused, so a stale

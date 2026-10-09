@@ -37,16 +37,13 @@ const SET_TIMEOUT = 15000;
  * for every name in SET_FILES plus `atlas` (the parsed assets/zones/<set>/atlas.json: pixel rects and heights of the props and
  * decals; unchecked, zoneload.js parseAtlas validates it): a file that is missing, fails or takes longer than SET_TIMEOUT is
  * `null`, never a rejection. Images are decoded here, so the later texture upload does not decode on the main thread.
+ * skin.webp is the one optional file a set may simply not have (themes.js: a place with `skin: null`), so it is requested only
+ * when atlas.json lists a `skin` entry, or, if the atlas could not be read, when `skinHint` (the place names a skin) says so:
+ * no request, no console 404, for a set without one.
  */
-export function loadSet(set) {
+export function loadSet(set, skinHint = false) {
   const bad = !/^[a-z0-9_]{1,24}$/.test(set);
-  const atlas = new Promise((resolve) => {
-    if (bad) { resolve(null); return; }
-    const timer = setTimeout(() => resolve(null), SET_TIMEOUT);
-    Promise.resolve().then(() => fetch(`assets/zones/${set}/atlas.json`)).then((r) => (r.ok ? r.json() : null)).catch(() => null)
-      .then((j) => { clearTimeout(timer); resolve(j); });
-  });
-  return Promise.all([...SET_FILES.map((f) => new Promise((resolve) => {
+  const image = (f) => new Promise((resolve) => {
     if (bad) { resolve(null); return; }
     const img = new Image();
     const timer = setTimeout(() => { img.onload = img.onerror = null; resolve(null); }, SET_TIMEOUT);
@@ -54,7 +51,16 @@ export function loadSet(set) {
     img.onload = () => (img.decode ? img.decode().then(() => done(img), () => done(img)) : done(img));
     img.onerror = () => done(null);
     img.src = `assets/zones/${set}/${f}.webp`;
-  })), atlas]).then((got) => Object.fromEntries([...SET_FILES, 'atlas'].map((f, i) => [f, got[i]])));
+  });
+  const atlas = new Promise((resolve) => {
+    if (bad) { resolve(null); return; }
+    const timer = setTimeout(() => resolve(null), SET_TIMEOUT);
+    Promise.resolve().then(() => fetch(`assets/zones/${set}/atlas.json`)).then((r) => (r.ok ? r.json() : null)).catch(() => null)
+      .then((j) => { clearTimeout(timer); resolve(j); });
+  });
+  const skin = atlas.then((j) => ((j && typeof j === 'object' ? !!j.skin : skinHint) ? image('skin') : null));
+  const keys = [...SET_FILES, 'atlas'];
+  return Promise.all(keys.map((f) => (f === 'skin' ? skin : f === 'atlas' ? atlas : image(f)))).then((v) => Object.fromEntries(keys.map((f, i) => [f, v[i]])));
 }
 
 let maxAniso = 4;
